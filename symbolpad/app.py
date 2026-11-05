@@ -148,6 +148,11 @@ class Controller(QObject):
         menu.addAction("Dock to the right").triggered.connect(lambda: self._place("right"))
         menu.addAction("Floating box").triggered.connect(lambda: self._place("float"))
         menu.addSeparator()
+        self._tray_rgb = menu.addAction("RGB border")
+        self._tray_rgb.setCheckable(True)
+        self._tray_rgb.setChecked(self.store["rgb_border"])
+        self._tray_rgb.triggered.connect(lambda on: self.set_setting("rgb_border", on))
+        menu.addSeparator()
         menu.addAction("Quit SymbolPad").triggered.connect(self.quit)
         tray.setContextMenu(menu)
         tray.show()
@@ -223,6 +228,10 @@ class Controller(QObject):
         self.store[key] = value
         if key == "theme":
             self.apply_theme()
+        elif key == "rgb_border":
+            self.window.set_rgb(value)
+            if self.tray is not None:
+                self._tray_rgb.setChecked(value)
 
     def set_hotkey(self, key, announce=True):
         ok = self.hotkey.set(key) if key != "off" else False

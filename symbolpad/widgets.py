@@ -411,7 +411,10 @@ class Bubble(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         accent = t.accent.lighter(112) if self._hover else t.accent
         r = QRectF(self.rect())
-        p.setPen(QPen(QColor(255, 255, 255, 70), 1))
+        if self.window_.rgb_on:
+            p.setPen(QPen(self.window_.rainbow(self.rect()), 3))
+        else:
+            p.setPen(QPen(QColor(255, 255, 255, 70), 1))
         p.setBrush(accent)
         if self.side == "float":
             p.drawEllipse(r.adjusted(3, 3, -3, -3))

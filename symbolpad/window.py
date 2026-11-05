@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, Qt, QTimer
-from PySide6.QtGui import QActionGroup, QGuiApplication, QKeySequence, QPainter, QPen, QShortcut
+from PySide6.QtGui import (QActionGroup, QBrush, QColor, QConicalGradient, QGuiApplication, QKeySequence, QPainter,
+                           QPen, QRegion, QShortcut)
 from PySide6.QtWidgets import (QButtonGroup, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton,
                                QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
@@ -446,6 +447,10 @@ class Panel(QWidget):
         keys = [(k, label) for k, (label, _code, _mods) in macos.HOTKEYS.items()] + [("off", "Off")]
         radio(menu.addMenu(f"Shortcut to open SymbolPad:  {ctl.hotkey.label or 'off'}"), keys,
               store["hotkey"], ctl.set_hotkey)
+        rgb = menu.addAction("RGB border")
+        rgb.setCheckable(True)
+        rgb.setChecked(store["rgb_border"])
+        rgb.toggled.connect(lambda on: ctl.set_setting("rgb_border", on))
         radio(menu.addMenu("Appearance"), [("system", "Match macOS"), ("light", "Light"), ("dark", "Dark")],
               store["theme"], lambda v: ctl.set_setting("theme", v))
         menu.addSeparator()
@@ -478,6 +483,39 @@ class PaletteWindow(QWidget):
         self.panel = Panel(ctl, self)
         self._drag = None
         self._shortcuts()
+        self.hue = 0.0                                  # where the RGB border's colours start
+        self._rgb_timer = QTimer(self, interval=33, timeout=self._spin_rgb)
+        self.set_rgb(self.store["rgb_border"])
+
+    # ------------------------------------------------------------------ RGB border
+    @property
+    def rgb_on(self):
+        return self._rgb_timer.isActive()
+
+    def set_rgb(self, on):
+        if on:
+            self._rgb_timer.start()
+        else:
+            self._rgb_timer.stop()
+        self.update()
+        self.bubble.update()
+
+    def _spin_rgb(self):
+        if not self.isVisible():
+            return
+        self.hue = (self.hue + 3) % 360
+        if self.expanded:          # repaint just the edge, not the whole panel
+            r = self.rect()
+            self.update(QRegion(r).subtracted(QRegion(r.adjusted(5, 5, -5, -5))))
+        else:
+            self.bubble.update()
+
+    def rainbow(self, rect):
+        """A brush that runs through every colour around the centre of `rect`."""
+        g = QConicalGradient(QRectF(rect).center(), self.hue)
+        for i in range(7):
+            g.setColorAt(i / 6, QColor.fromHsv((i * 60) % 360, 235, 255))
+        return QBrush(g)
 
     def resizeEvent(self, e):
         self.bubble.setGeometry(self.rect())
@@ -650,6 +688,14 @@ class PaletteWindow(QWidget):
         t = self.ctl.theme
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(QPen(t.border, 1))
+        p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(t.bg)
         p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 14, 14)
+        if self.rgb_on:
+            p.setPen(QPen(self.rainbow(self.rect()), 3))
+            inset = 1.5
+        else:
+            p.setPen(QPen(t.border, 1))
+            inset = 0.5
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(inset, inset, -inset, -inset), 14, 14)

@@ -20,6 +20,7 @@ DEFAULTS = {
     "collapse_after_insert": False,
     "hotkey": "ctrl+alt+s",
     "theme": "system",             # "system", "light" or "dark"
+    "rgb_border": True,            # animated rainbow edge
     "category": "math",
     "page": "search",              # "search" or "draw"
     "recent": [],
