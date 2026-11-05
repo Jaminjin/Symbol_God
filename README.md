@@ -5,7 +5,7 @@ Find a symbol by **searching** for it, like Word's *Insert Symbol*, or by **draw
 like Google Docs' *Draw a symbol here*. Click it and it's typed where your cursor is.
 
 The palette can float anywhere as a box, dock to the side of the screen as a panel,
-or shrink to a little **Ω** bubble.
+or shrink to a little **τ** bubble.
 
 ## Run it in PyCharm
 
@@ -15,8 +15,8 @@ or shrink to a little **Ω** bubble.
    Add Local Interpreter → Select existing** and choose `SymbolPad/.venv/bin/python`.
 3. Open `main.py` and press the green **▶ Run** button.
 
-The palette appears near the top-right corner, and an **Ω** appears in the menu bar.
-SymbolPad has no Dock icon. To quit, use the Ω menu, ⚙ → *Quit SymbolPad*, or
+The palette appears near the top-right corner, and an **τ** appears in the menu bar.
+SymbolPad has no Dock icon. To quit, use the τ menu, ⚙ → *Quit SymbolPad*, or
 PyCharm's ■ Stop button.
 
 ### One-time permission (needed to type into Word)
@@ -50,9 +50,9 @@ Until you allow it, clicking a symbol copies it, and you press **⌘V** in Word.
 **Moving it around.** Drag the top bar to move it. Drag it to the left or right edge
 of the screen and it docks there as a full-height side panel; drag it away to float
 it again. You can also click ◨ or ❐ in the top bar, or double-click the bar.
-**–** shrinks it to the Ω bubble, or to a tab on the screen edge when docked.
+**–** shrinks it to the τ bubble, or to a tab on the screen edge when docked.
 Click the bubble to open it again. **✕** hides it; bring it back with ⌃⌥S or the
-Ω menu.
+τ menu.
 
 **Tips for school**
 

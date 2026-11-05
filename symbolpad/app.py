@@ -142,7 +142,7 @@ class Controller(QObject):
         font.setBold(True)
         p.setFont(font)
         p.setPen(Qt.GlobalColor.black)
-        p.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, "Ω")
+        p.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, "τ")
         p.end()
         icon = QIcon(pix)
         icon.setIsMask(True)          # lets macOS tint it for light/dark menu bars

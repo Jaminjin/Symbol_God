@@ -436,4 +436,4 @@ class Bubble(QWidget):
         font.setBold(True)
         p.setFont(font)
         p.setPen(QColor("white"))
-        p.drawText(glyph_rect, Qt.AlignmentFlag.AlignCenter, "Ω")
+        p.drawText(glyph_rect, Qt.AlignmentFlag.AlignCenter, "τ")
