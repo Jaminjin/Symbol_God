@@ -55,6 +55,52 @@ def float_above_everything(widget):
         traceback.print_exc()
 
 
+_glass_views = {}
+
+
+def set_glass(widget, on, radius=14.0):
+    """Put Apple's Liquid Glass (or the older blur on earlier macOS) behind a window.
+
+    The glass view sits underneath Qt's content, so it shows through wherever
+    SymbolPad paints see-through colours.
+    """
+    if not AVAILABLE:
+        return
+    try:
+        window = objc.objc_object(c_void_p=int(widget.winId())).window()
+        content = window.contentView() if window is not None else None
+        if content is None or content.superview() is None:
+            return
+        view = _glass_views.get(id(widget))
+        if not on:
+            if view is not None:
+                view.setHidden_(True)
+            return
+        if view is None:
+            glass_class = getattr(AppKit, "NSGlassEffectView", None)
+            if glass_class is not None:                       # macOS 26+: real Liquid Glass
+                view = glass_class.alloc().initWithFrame_(content.frame())
+                view.setCornerRadius_(radius)
+            else:                                             # older macOS: frosted blur
+                view = AppKit.NSVisualEffectView.alloc().initWithFrame_(content.frame())
+                view.setMaterial_(AppKit.NSVisualEffectMaterialHUDWindow)
+                view.setBlendingMode_(AppKit.NSVisualEffectBlendingModeBehindWindow)
+                view.setState_(AppKit.NSVisualEffectStateActive)
+                view.setWantsLayer_(True)
+                view.layer().setCornerRadius_(radius)
+                view.layer().setMasksToBounds_(True)
+            view.setAutoresizingMask_(AppKit.NSViewWidthSizable | AppKit.NSViewHeightSizable)
+            content.superview().addSubview_positioned_relativeTo_(view, AppKit.NSWindowBelow, content)
+            _glass_views[id(widget)] = view
+        view.setFrame_(content.frame())
+        view.setHidden_(False)
+        window.setOpaque_(False)
+        window.setBackgroundColor_(AppKit.NSColor.clearColor())
+        window.invalidateShadow()
+    except Exception:
+        traceback.print_exc()
+
+
 def bring_self_to_front():
     if not AVAILABLE:
         return

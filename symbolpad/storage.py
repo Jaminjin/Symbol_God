@@ -21,6 +21,7 @@ DEFAULTS = {
     "hotkey": "ctrl+alt+s",
     "theme": "system",             # "system", "light" or "dark"
     "rgb_border": True,            # animated rainbow edge
+    "glass": True,                 # see-through Liquid Glass background
     "category": "math",
     "page": "search",              # "search" or "draw"
     "recent": [],

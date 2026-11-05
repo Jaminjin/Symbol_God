@@ -109,6 +109,8 @@ class Controller(QObject):
     # ------------------------------------------------------------------ look
     def apply_theme(self):
         self.theme = theme.pick(self.store["theme"])
+        if self.store["glass"]:
+            self.theme = theme.glassy(self.theme)
         self.app.setPalette(theme.palette(self.theme))
         self.app.setStyleSheet(theme.stylesheet(self.theme))
         self.window.set_theme(self.theme)
@@ -117,6 +119,12 @@ class Controller(QObject):
     def after_show(self):
         if self.native:
             macos.float_above_everything(self.window)
+        self.update_glass()
+
+    def update_glass(self):
+        """Glass behind the open panel only (the bubble and edge tab stay solid)."""
+        if self.native and self.window.isVisible():
+            macos.set_glass(self.window, self.store["glass"] and self.window.expanded)
 
     def show_toast(self, text, ms=2200):
         self.toast.show_message(text, self.window.frameGeometry(), below=not self.window.expanded, ms=ms)
@@ -148,6 +156,10 @@ class Controller(QObject):
         menu.addAction("Dock to the right").triggered.connect(lambda: self._place("right"))
         menu.addAction("Floating box").triggered.connect(lambda: self._place("float"))
         menu.addSeparator()
+        self._tray_glass = menu.addAction("Liquid glass")
+        self._tray_glass.setCheckable(True)
+        self._tray_glass.setChecked(self.store["glass"])
+        self._tray_glass.triggered.connect(lambda on: self.set_setting("glass", on))
         self._tray_rgb = menu.addAction("RGB border")
         self._tray_rgb.setCheckable(True)
         self._tray_rgb.setChecked(self.store["rgb_border"])
@@ -226,8 +238,11 @@ class Controller(QObject):
 
     def set_setting(self, key, value):
         self.store[key] = value
-        if key == "theme":
+        if key in ("theme", "glass"):
             self.apply_theme()
+            self.update_glass()
+            if key == "glass" and self.tray is not None:
+                self._tray_glass.setChecked(value)
         elif key == "rgb_border":
             self.window.set_rgb(value)
             if self.tray is not None:

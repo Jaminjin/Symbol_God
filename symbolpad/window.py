@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, Qt, QTimer
-from PySide6.QtGui import (QActionGroup, QBrush, QColor, QConicalGradient, QGuiApplication, QKeySequence, QPainter,
-                           QPen, QRegion, QShortcut)
+from PySide6.QtGui import (QActionGroup, QBrush, QColor, QConicalGradient, QGuiApplication, QKeySequence,
+                           QLinearGradient, QPainter, QPen, QRegion, QShortcut)
 from PySide6.QtWidgets import (QButtonGroup, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton,
                                QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
-from . import macos
+from . import macos, theme
 from .symbols import code_of, display_text
 from .widgets import Bubble, DrawPad, InfoBar, SymbolGrid
 
@@ -447,6 +447,10 @@ class Panel(QWidget):
         keys = [(k, label) for k, (label, _code, _mods) in macos.HOTKEYS.items()] + [("off", "Off")]
         radio(menu.addMenu(f"Shortcut to open SymbolPad:  {ctl.hotkey.label or 'off'}"), keys,
               store["hotkey"], ctl.set_hotkey)
+        glass = menu.addAction("Liquid glass")
+        glass.setCheckable(True)
+        glass.setChecked(store["glass"])
+        glass.toggled.connect(lambda on: ctl.set_setting("glass", on))
         rgb = menu.addAction("RGB border")
         rgb.setCheckable(True)
         rgb.setChecked(store["rgb_border"])
@@ -581,6 +585,7 @@ class PaletteWindow(QWidget):
         self.setGeometry(self._clamp(rect, area))
         self.panel.update_dock_button(dock)
         self.update()
+        self.ctl.update_glass()
 
     def expand(self):
         if self.expanded:
@@ -689,8 +694,18 @@ class PaletteWindow(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(t.bg)
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 14, 14)
+        body = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        if self.store["glass"]:
+            p.setBrush(theme.glass_tint(t))
+            p.drawRoundedRect(body, 14, 14)
+            shine = QLinearGradient(body.topLeft(), body.bottomLeft())    # light catching the top edge
+            shine.setColorAt(0.0, QColor(255, 255, 255, 70 if t.dark else 110))
+            shine.setColorAt(0.18, QColor(255, 255, 255, 0))
+            p.setBrush(QBrush(shine))
+            p.drawRoundedRect(body, 14, 14)
+        else:
+            p.setBrush(t.bg)
+            p.drawRoundedRect(body, 14, 14)
         if self.rgb_on:
             p.setPen(QPen(self.rainbow(self.rect()), 3))
             inset = 1.5

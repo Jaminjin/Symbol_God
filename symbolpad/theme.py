@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QGuiApplication, QPalette
@@ -35,6 +35,17 @@ DARK = Theme(
     accent=QColor(102, 148, 255), selected=QColor(102, 148, 255, 70), pad_line=QColor(104, 107, 118),
     ink=QColor(240, 241, 245),
 )
+
+
+def glassy(t: Theme):
+    """The same theme with see-through fields, so the glass behind shows."""
+    f = t.field
+    return replace(t, field=QColor(f.red(), f.green(), f.blue(), 150 if t.dark else 130))
+
+
+def glass_tint(t: Theme):
+    """How much colour to lay over the glass (keeps text readable on busy backgrounds)."""
+    return QColor(30, 31, 36, 110) if t.dark else QColor(255, 255, 255, 95)
 
 
 def pick(setting):
