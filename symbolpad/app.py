@@ -1,0 +1,299 @@
+"""Starts SymbolPad and wires the window, search, recognizer and macOS pieces together."""
+
+from __future__ import annotations
+
+import os
+import signal
+import sys
+import threading
+
+# By default Qt activates the whole app whenever a window is raised, which would
+# steal the keyboard back from Word right after typing a symbol.  We activate
+# SymbolPad ourselves, only when you actually want it.
+os.environ.setdefault("QT_MAC_SET_RAISE_PROCESS", "0")
+
+from PySide6.QtCore import QObject, Qt, QTimer, Signal, qVersion
+from PySide6.QtGui import QFont, QIcon, QPainter, QPixmap
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+
+from . import glyphs, macos, theme
+from .engine import DrawingEngine
+from .inserter import Inserter
+from .storage import Store
+from .symbols import SymbolIndex
+from .widgets import Toast
+from .window import PaletteWindow
+
+QT_VERSION = qVersion()
+
+
+class Controller(QObject):
+    _fonts_checked = Signal(object)
+
+    def __init__(self, app: QApplication):
+        super().__init__()
+        self.app = app
+        self.native = macos.AVAILABLE and app.platformName() == "cocoa"
+        self.store = Store()
+        self.index = SymbolIndex()
+        self.index.usage = self.store["usage"]
+        self.theme = theme.pick(self.store["theme"])
+        self.engine = DrawingEngine(self.index, self.store)
+        self.tracker = macos.FrontAppTracker() if self.native else None
+        self.inserter = Inserter(self.store, self.tracker)
+        self.hotkey = macos.GlobalHotkey(lambda: QTimer.singleShot(0, self.toggle_from_hotkey))
+        self.toast = Toast()
+        self.window = PaletteWindow(self)
+        self.tray = self._make_tray()
+
+        self.inserter.finished.connect(self.show_toast)
+        self.inserter.needs_permission.connect(self.window.panel.show_permission_banner)
+        self.engine.ready.connect(self.window.panel.refresh_matches)
+        self._fonts_checked.connect(self._hide_missing)
+        app.styleHints().colorSchemeChanged.connect(lambda *_: self.apply_theme())
+        self.apply_theme()
+        self._check_fonts()
+
+    def start(self):
+        self.window.apply_layout()
+        self.window.show()
+        self.after_show()
+        self.window.panel.refresh_all()
+        if self.native:
+            self.set_hotkey(self.store["hotkey"], announce=False)
+            if self.store["insert_method"] != "copy" and not macos.can_type():
+                self.window.panel.show_permission_banner()
+        QTimer.singleShot(200, self.engine.start)
+        if not self.store["seen_welcome"]:
+            QTimer.singleShot(1200, self._welcome)
+
+    def _check_fonts(self):
+        """Hide characters this Mac can't draw (checked on first launch, then cached).
+
+        Step 1 (background thread): ask CoreText which characters have no font.
+        Step 2 (main thread, in small batches): draw the rest and drop any that
+        come out as the striped "no glyph" box.
+        """
+        if not macos.AVAILABLE:
+            return
+        self._coverage_path = self.store.folder / "font_coverage.json"
+        self._coverage_key = f"{macos.font_signature()}|qt{QT_VERSION}"
+        cached = Store._read(self._coverage_path, {})
+        if cached.get("key") == self._coverage_key:
+            self.index.hide(chr(cp) for cp in cached.get("missing", []))
+            return
+        chars = [s.char for s in self.index.symbols]
+        threading.Thread(target=lambda: self._fonts_checked.emit(macos.missing_glyphs(chars)),
+                         daemon=True).start()
+
+    def _hide_missing(self, missing):
+        self.index.hide(missing)
+        self.window.panel.refresh_results()
+        self._render_check([s.char for s in self.index.symbols], 0, set(missing))
+
+    def _render_check(self, chars, start, bad, batch=1500):
+        bad.update(glyphs.unrenderable(chars[start:start + batch], self.window.panel.grid.font()))
+        if start + batch < len(chars):
+            QTimer.singleShot(15, lambda: self._render_check(chars, start + batch, bad))
+            return
+        self.index.hide(bad)
+        self.window.panel.refresh_results()
+        self.store._write(self._coverage_path, {"key": self._coverage_key, "missing": sorted(ord(c) for c in bad)})
+
+    def _welcome(self):
+        self.store["seen_welcome"] = True
+        key = self.hotkey.label
+        self.show_toast(f"Tip: press {key} anywhere to open SymbolPad" if key else "Tip: drag me by the top bar",
+                        ms=4500)
+
+    # ------------------------------------------------------------------ look
+    def apply_theme(self):
+        self.theme = theme.pick(self.store["theme"])
+        self.app.setPalette(theme.palette(self.theme))
+        self.app.setStyleSheet(theme.stylesheet(self.theme))
+        self.window.set_theme(self.theme)
+        self.toast.theme = self.theme
+
+    def after_show(self):
+        if self.native:
+            macos.float_above_everything(self.window)
+
+    def show_toast(self, text, ms=2200):
+        self.toast.show_message(text, self.window.frameGeometry(), below=not self.window.expanded, ms=ms)
+        if self.native:
+            macos.float_above_everything(self.toast)
+
+    def _make_tray(self):
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return None
+        pix = QPixmap(44, 44)
+        pix.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pix)
+        font = QFont()
+        font.setPixelSize(32)
+        font.setBold(True)
+        p.setFont(font)
+        p.setPen(Qt.GlobalColor.black)
+        p.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, "Ω")
+        p.end()
+        icon = QIcon(pix)
+        icon.setIsMask(True)          # lets macOS tint it for light/dark menu bars
+        tray = QSystemTrayIcon(icon, self)
+        tray.setToolTip("SymbolPad")
+        menu = QMenu()
+        self._tray_show = menu.addAction("Show SymbolPad")
+        self._tray_show.triggered.connect(lambda: self.window.summon())
+        menu.addSeparator()
+        menu.addAction("Dock to the left").triggered.connect(lambda: self._place("left"))
+        menu.addAction("Dock to the right").triggered.connect(lambda: self._place("right"))
+        menu.addAction("Floating box").triggered.connect(lambda: self._place("float"))
+        menu.addSeparator()
+        menu.addAction("Quit SymbolPad").triggered.connect(self.quit)
+        tray.setContextMenu(menu)
+        tray.show()
+        self._tray_menu = menu
+        return tray
+
+    def _place(self, where):
+        self.window.summon()
+        if where == "float":
+            if self.store["dock"] != "float":
+                self.window.float_here()
+        else:
+            self.window.dock_to(where)
+
+    # ------------------------------------------------------------------ actions
+    def insert(self, ch, strokes=None, pad_size=None):
+        if not ch:
+            return
+        if strokes:
+            self.engine.learn(ch, strokes, pad_size)
+        self._used(ch)
+        self.inserter.insert(ch)
+        if self.store["collapse_after_insert"]:
+            self.window.collapse(return_focus=False)
+
+    def copy(self, ch):
+        self.inserter.copy(ch)
+        self._used(ch)
+        self.show_toast(f"Copied {ch}")
+
+    def copy_text(self, text):
+        self.inserter.copy(text)
+        self.show_toast(f"Copied {text}")
+
+    def _used(self, ch):
+        self.store.record_use(ch)
+        self.index.usage = self.store["usage"]
+        self.window.panel.refresh_recent()
+
+    def toggle_favorite(self, ch):
+        added = self.store.toggle_favorite(ch)
+        self.window.panel.on_favorites_changed(ch)
+        self.show_toast(f"{ch} added to Favorites" if added else f"{ch} removed from Favorites")
+
+    def focus_palette(self):
+        if self.native:
+            macos.bring_self_to_front()
+        self.window.raise_()
+        self.window.activateWindow()
+
+    def return_focus(self):
+        """Hand the keyboard back to the app you were typing in."""
+        target = self.tracker.target() if self.tracker else None
+        if target is not None:
+            macos.activate(target)
+
+    def toggle_from_hotkey(self):
+        if self.window.isVisible() and self.window.expanded and self.window.isActiveWindow():
+            self.return_focus()
+        else:
+            self.window.summon()
+
+    def hide_palette(self):
+        self.window.hide()
+        self.return_focus()
+
+    def ask_for_permission(self):
+        self.window.panel.banner.hide()
+        macos.ask_for_typing_permission()
+        self.show_toast("Switch on PyCharm (or Terminal) in the list, then restart SymbolPad", ms=6000)
+
+    def set_setting(self, key, value):
+        self.store[key] = value
+        if key == "theme":
+            self.apply_theme()
+
+    def set_hotkey(self, key, announce=True):
+        ok = self.hotkey.set(key) if key != "off" else False
+        if key == "off":
+            self.hotkey.clear()
+        self.store["hotkey"] = key
+        label = self.hotkey.label
+        if self.tray is not None:
+            self._tray_show.setText(f"Show SymbolPad    {label}" if label else "Show SymbolPad")
+        if announce:
+            if key == "off":
+                self.show_toast("Shortcut turned off")
+            elif ok:
+                self.show_toast(f"Press {label} anywhere to open SymbolPad")
+            else:
+                self.show_toast("Another app already uses that shortcut, pick a different one")
+        elif key != "off" and not ok:
+            print(f"SymbolPad: couldn't register the {key} shortcut (another app may be using it).")
+
+    def clear_recent(self):
+        self.store.clear_recent()
+        self.index.usage = self.store["usage"]
+        self.window.panel.refresh_recent()
+
+    def forget_drawings(self):
+        self.engine.forget_drawings()
+        self.show_toast("Forgot your handwriting samples")
+
+    def quit(self):
+        self.hotkey.clear()
+        self.app.quit()
+
+
+def main(argv=None):
+    argv = list(sys.argv if argv is None else argv)
+    smoke_test = "--smoke-test" in argv
+    QApplication.setApplicationName("SymbolPad")
+    app = QApplication(argv)
+    app.setQuitOnLastWindowClosed(False)
+    app.setStyle("Fusion")
+    if macos.AVAILABLE and app.platformName() == "cocoa":
+        macos.make_accessory_app()
+        macos.keep_responsive()
+    ctl = Controller(app)
+    ctl.start()
+
+    # Let Ctrl+C in a terminal (or PyCharm's Stop button) close the app cleanly.
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
+    heartbeat = QTimer()
+    heartbeat.timeout.connect(lambda: None)
+    heartbeat.start(250)
+
+    if smoke_test:
+        QTimer.singleShot(5000, lambda: (_report(ctl), app.quit()))
+    return app.exec()
+
+
+def _report(ctl):
+    """Printed by `python main.py --smoke-test` to check the app starts correctly."""
+    w = ctl.window
+    print("platform:", ctl.app.platformName())
+    print("window:", w.geometry().getRect(), "visible:", w.isVisible(), "expanded:", w.expanded)
+    print("search results shown:", len(w.panel.grid.chars()), "| recognizer ready:", ctl.engine.is_ready)
+    print("hotkey:", ctl.hotkey.label or "none", "| tray icon:", bool(ctl.tray and ctl.tray.isVisible()))
+    print("typing allowed:", macos.can_type() if ctl.native else "n/a")
+    if ctl.native:
+        import AppKit
+        import objc
+        nswin = objc.objc_object(c_void_p=int(w.winId())).window()
+        print("activation policy:", AppKit.NSApplication.sharedApplication().activationPolicy(),
+              "| level:", nswin.level(), "| all spaces:", bool(nswin.collectionBehavior() & 1),
+              "| hides when inactive:", nswin.hidesOnDeactivate())
+        target = ctl.tracker.target()
+        print("would type into:", target.localizedName() if target else None)
