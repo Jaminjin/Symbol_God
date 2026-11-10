@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QAbstractListModel, QModelIndex, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QImageReader, QMovie, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QLabel, QListView, QPushButton, QSizePolicy,
                                QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
@@ -243,6 +243,87 @@ class DrawPad(QWidget):
                 path.quadTo(QPointF(x0, y0), QPointF((x0 + x1) / 2, (y0 + y1) / 2))
             path.lineTo(QPointF(*s[-1]))
             p.drawPath(path)
+
+
+# --------------------------------------------------------------------------- GIF display
+class MediaView(QWidget):
+    """A GIF that replays forever (or a still picture) in the panel's spare space."""
+
+    menu_requested = Signal(QPoint)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._movie = None
+        self._still = None
+        self._aspect = 16 / 9
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(lambda pos: self.menu_requested.emit(self.mapToGlobal(pos)))
+
+    @property
+    def has_content(self):
+        return self._movie is not None or self._still is not None
+
+    def load(self, path):
+        """Show the file at `path` (None clears it).  Returns False if it can't be read."""
+        if self._movie is not None:
+            self._movie.stop()
+            self._movie.deleteLater()
+        self._movie = self._still = None
+        if path is None:
+            self.update()
+            return False
+        reader = QImageReader(str(path))
+        reader.setAutoTransform(True)
+        if not reader.canRead():
+            return False
+        if reader.supportsAnimation():
+            size = reader.size()
+            if size.isValid() and size.height() > 0:
+                self._aspect = size.width() / size.height()
+            self._movie = QMovie(str(path))
+            self._movie.setParent(self)
+            self._movie.frameChanged.connect(lambda _frame: self.update())
+            self._movie.finished.connect(self._movie.start)      # some GIFs only play once by themselves
+            self._movie.start()
+            if not self.isVisible():
+                self._movie.setPaused(True)
+        else:
+            self._still = QPixmap.fromImage(reader.read())
+            if self._still.isNull():
+                self._still = None
+                return False
+            self._aspect = self._still.width() / self._still.height()
+        self.update()
+        return True
+
+    def refit(self, width, panel_height):
+        """As tall as the picture needs at this width, leaving most of the panel for symbols."""
+        tallest = max(80, int(panel_height * 0.3))
+        self.setFixedHeight(max(80, min(int(width / self._aspect), tallest)))
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if self._movie is not None:
+            self._movie.setPaused(False)
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        if self._movie is not None:
+            self._movie.setPaused(True)      # no point animating what nobody can see
+
+    def paintEvent(self, _e):
+        pix = self._movie.currentPixmap() if self._movie is not None else self._still
+        if pix is None or pix.isNull():
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        size = pix.size().scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio)
+        rect = QRect(QPoint((self.width() - size.width()) // 2, (self.height() - size.height()) // 2), size)
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(rect), 10, 10)
+        p.setClipPath(clip)
+        p.drawPixmap(rect, pix)
 
 
 # --------------------------------------------------------------------------- info bar

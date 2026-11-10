@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QButtonGroup, QFrame, QHBoxLayout, QLabel, QLineE
 
 from . import macos, theme
 from .symbols import code_of, display_text
-from .widgets import Bubble, DrawPad, InfoBar, SymbolGrid
+from .widgets import Bubble, DrawPad, InfoBar, MediaView, SymbolGrid
 
 PANEL_W, PANEL_H = 384, 620
 BUBBLE = 56
@@ -58,6 +58,10 @@ class Panel(QWidget):
         self.pages.addWidget(self._build_search_page())
         self.pages.addWidget(self._build_draw_page())
         root.addWidget(self.pages, 1)
+        self.media = MediaView()
+        self.media.hide()
+        self.media.menu_requested.connect(self._media_menu)
+        root.addWidget(self.media)
 
         recent_row = QHBoxLayout()
         recent_row.setSpacing(6)
@@ -335,11 +339,33 @@ class Panel(QWidget):
     def show_permission_banner(self):
         self.banner.show()
 
+    # ------------------------------------------------------------------ GIF display
+    def load_media(self, path):
+        self.media.load(path)
+        self.media.refit(self.width() - 24, self.height())
+        self.refresh_media()
+
+    def refresh_media(self):
+        """Show the GIF under the symbols; the Draw page needs that room for the pad."""
+        self.media.setVisible(bool(self.store["media_on"]) and self.media.has_content
+                              and self.pages.currentIndex() == 0)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.media.refit(self.width() - 24, self.height())
+
+    def _media_menu(self, global_pos):
+        menu = QMenu(self)
+        menu.addAction("Choose a different GIF…").triggered.connect(self.ctl.choose_media)
+        menu.addAction("Hide GIF").triggered.connect(lambda: self.ctl.set_media(False))
+        menu.exec(global_pos)
+
     # ------------------------------------------------------------------ pages & keys
     def show_page(self, page, focus=True):
         page = "draw" if page == "draw" else "search"
         self.store.settings["page"] = page
         self.pages.setCurrentIndex(1 if page == "draw" else 0)
+        self.refresh_media()
         self.search_tab.setChecked(page == "search")
         self.draw_tab.setChecked(page == "draw")
         if page == "draw":
@@ -451,6 +477,11 @@ class Panel(QWidget):
         glass.setCheckable(True)
         glass.setChecked(store["glass"])
         glass.toggled.connect(lambda on: ctl.set_setting("glass", on))
+        media = menu.addAction("Show GIF")
+        media.setCheckable(True)
+        media.setChecked(store["media_on"])
+        media.toggled.connect(ctl.set_media)
+        menu.addAction("Choose GIF…").triggered.connect(ctl.choose_media)
         rgb = menu.addAction("RGB border")
         rgb.setCheckable(True)
         rgb.setChecked(store["rgb_border"])

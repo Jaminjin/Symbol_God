@@ -45,6 +45,7 @@ Until you allow it, clicking a symbol copies it, and you press **⌘V** in Word.
 | Browse | The category button (∑ Math ▾): Greek, Arrows, Superscripts, Science… |
 | Insert a recent symbol | Click it in the *Recent* row, or **⌘1…⌘9** |
 | Save favourites | Right-click → *Add to Favorites*, or the ☆ button |
+| Play a looping GIF in the panel | ⚙ → *Show GIF* (⚙ → *Choose GIF…* to change it, or right-click the GIF) |
 | Go back to Word | **Esc** (clears the search first, if there is one) |
 
 **Moving it around.** Drag the top bar to move it. Drag it to the left or right edge

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import sys
 import threading
+from pathlib import Path
 
 # By default Qt activates the whole app whenever a window is raised, which would
 # steal the keyboard back from Word right after typing a symbol.  We activate
@@ -13,8 +15,8 @@ import threading
 os.environ.setdefault("QT_MAC_SET_RAISE_PROCESS", "0")
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal, qVersion
-from PySide6.QtGui import QFont, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+from PySide6.QtGui import QFont, QIcon, QImageReader, QPainter, QPixmap
+from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QSystemTrayIcon
 
 from . import glyphs, macos, theme
 from .engine import DrawingEngine
@@ -58,6 +60,7 @@ class Controller(QObject):
         self.window.apply_layout()
         self.window.show()
         self.after_show()
+        self.window.panel.load_media(self.media_path())
         self.window.panel.refresh_all()
         if self.native:
             self.set_hotkey(self.store["hotkey"], announce=False)
@@ -270,6 +273,54 @@ class Controller(QObject):
         self.store.clear_recent()
         self.index.usage = self.store["usage"]
         self.window.panel.refresh_recent()
+
+    # ------------------------------------------------------------------ GIF display
+    def media_path(self):
+        name = self.store["media_file"]
+        path = self.store.folder / name if name else None
+        return path if path is not None and path.exists() else None
+
+    def set_media(self, on):
+        if on and self.media_path() is None:
+            self.choose_media()
+            return
+        self.store["media_on"] = bool(on)
+        self.window.panel.refresh_media()
+
+    def choose_media(self, _checked=False):
+        QTimer.singleShot(0, self._pick_media)       # let the menu close first
+
+    def _pick_media(self):
+        self.focus_palette()
+        source, _filter = QFileDialog.getOpenFileName(
+            self.window, "Choose a GIF or picture", str(Path.home() / "Downloads"),
+            "GIFs and pictures (*.gif *.webp *.png *.jpg *.jpeg *.heic)")
+        if source:
+            self.use_media(Path(source))
+
+    def use_media(self, source):
+        """Keep our own copy, so the GIF still plays if the original is moved or deleted."""
+        if not QImageReader(str(source)).canRead():
+            self.show_toast("Couldn't open that file as a GIF or picture")
+            return
+        panel = self.window.panel
+        folder = self.store.folder
+        old = self.media_path()
+        dest = folder / f"display{source.suffix.lower()}"
+        panel.load_media(None)                       # let go of the file before replacing it
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            if source.resolve() != dest.resolve():
+                shutil.copyfile(source, dest)
+            if old is not None and old != dest:
+                old.unlink(missing_ok=True)
+        except OSError:
+            panel.load_media(old)
+            self.show_toast("Couldn't save a copy of that file")
+            return
+        self.store.settings["media_file"] = dest.name
+        self.store["media_on"] = True
+        panel.load_media(dest)
 
     def forget_drawings(self):
         self.engine.forget_drawings()

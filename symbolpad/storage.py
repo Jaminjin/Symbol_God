@@ -22,6 +22,8 @@ DEFAULTS = {
     "theme": "system",             # "system", "light" or "dark"
     "rgb_border": True,            # animated rainbow edge
     "glass": True,                 # see-through Liquid Glass background
+    "media_on": False,             # show the looping GIF in the panel
+    "media_file": "",              # our saved copy of it, inside the data folder
     "category": "math",
     "page": "search",              # "search" or "draw"
     "recent": [],
