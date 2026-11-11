@@ -10,18 +10,26 @@ from pathlib import Path
 # SYMBOLPAD_HOME lets you keep a separate set of settings (handy for testing).
 APP_DIR = Path(os.environ.get("SYMBOLPAD_HOME") or Path.home() / "Library" / "Application Support" / "SymbolPad")
 
+# A shortcut is {"code": Mac key code, "mods": Carbon modifier bits, "label": what to show}.
+CONTROL_OPTION_S = {"code": 1, "mods": 4096 | 2048, "label": "⌃⌥S"}
+
 DEFAULTS = {
     "dock": "float",               # "float", "left" or "right"
     "expanded": True,
     "panel_pos": None,             # top-left of the floating panel
+    "panel_size": None,            # [width, height] once you've resized it
     "bubble_pos": None,            # top-left of the floating bubble
     "dock_y": None,                # vertical centre of the edge tab when docked
     "insert_method": "type",       # "type", "paste" or "copy"
     "collapse_after_insert": False,
-    "hotkey": "ctrl+alt+s",
-    "theme": "system",             # "system", "light" or "dark"
+    "open_key": CONTROL_OPTION_S,  # shortcut that opens SymbolPad from any app (None = no shortcut)
+    "close_key": None,             # shortcut that closes it (None = the open shortcut does both)
+    "close_action": "hide",        # what closing does: "hide" or "bubble"
+    "show_in": "menu",             # where the τ icon lives: "menu", "dock" or "both"
+    "look": "glass-dark",          # see theme.LOOKS
+    "bg_color": "",                # your own background colour, "#rrggbb" ("" = none)
+    "bg_strength": 50,             # how strongly that colour tints the glass, in percent
     "rgb_border": True,            # animated rainbow edge
-    "glass": True,                 # see-through Liquid Glass background
     "media_on": False,             # show the looping GIF in the panel
     "media_file": "",              # our saved copy of it, inside the data folder
     "category": "math",
@@ -34,6 +42,31 @@ DEFAULTS = {
 MAX_RECENT = 40
 MAX_DRAWINGS_PER_SYMBOL = 12
 
+# Version 1 offered a fixed list of shortcuts, stored by these names.
+_V1_HOTKEYS = {
+    "ctrl+alt+s": CONTROL_OPTION_S,
+    "ctrl+shift+s": {"code": 1, "mods": 4096 | 512, "label": "⌃⇧S"},
+    "alt+cmd+s": {"code": 1, "mods": 2048 | 256, "label": "⌥⌘S"},
+    "ctrl+alt+cmd+s": {"code": 1, "mods": 4096 | 2048 | 256, "label": "⌃⌥⌘S"},
+    "ctrl+shift+space": {"code": 49, "mods": 4096 | 512, "label": "⌃⇧Space"},
+}
+
+
+def upgrade(saved):
+    """Turn settings saved by SymbolPad 1 into today's names (leaves newer settings alone)."""
+    saved = dict(saved)
+    if "look" not in saved and ("glass" in saved or "theme" in saved):
+        tone = saved.get("theme", "system")
+        if saved.get("glass", True):
+            saved["look"] = "glass-light" if tone == "light" else "glass-dark"
+        else:
+            saved["look"] = f"solid-{tone}" if tone in ("system", "light", "dark") else "solid-system"
+    if "open_key" not in saved and "hotkey" in saved:
+        saved["open_key"] = copy.deepcopy(_V1_HOTKEYS.get(saved["hotkey"]))      # "off" becomes None
+    for old in ("glass", "theme", "hotkey"):
+        saved.pop(old, None)
+    return saved
+
 
 class Store:
     def __init__(self, folder: Path = APP_DIR):
@@ -42,7 +75,8 @@ class Store:
         self.drawings_path = self.folder / "my_drawings.json"
         self.cache_path = self.folder / "font_templates.npz"
         self.settings = copy.deepcopy(DEFAULTS)
-        self.settings.update(self._read(self.settings_path, {}))
+        saved = self._read(self.settings_path, {})
+        self.settings.update(upgrade(saved if isinstance(saved, dict) else {}))
         # {char: [drawing, ...]}; a drawing is a list of strokes of [x, y] in 0..1
         self.drawings = self._read(self.drawings_path, {})
 

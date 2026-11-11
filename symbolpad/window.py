@@ -2,21 +2,40 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, Qt, QTimer
-from PySide6.QtGui import (QActionGroup, QBrush, QColor, QConicalGradient, QGuiApplication, QKeySequence,
-                           QLinearGradient, QPainter, QPen, QRegion, QShortcut)
+from PySide6.QtCore import QEvent, QLineF, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import (QActionGroup, QBrush, QColor, QConicalGradient, QGuiApplication, QIcon, QKeySequence,
+                           QPainter, QPen, QPixmap, QRegion, QShortcut)
 from PySide6.QtWidgets import (QButtonGroup, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton,
                                QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
 from . import macos, theme
 from .symbols import code_of, display_text
-from .widgets import Bubble, DrawPad, InfoBar, MediaView, SymbolGrid
+from .theme import RADIUS
+from .widgets import TAB_RADIUS, Bubble, DrawPad, InfoBar, MediaView, SymbolGrid
 
-PANEL_W, PANEL_H = 384, 620
+PANEL_W, PANEL_H = 384, 620      # size of the open palette until you resize it
+MIN_W, MIN_H = 300, 400          # ... and the smallest you can make it
 BUBBLE = 56
 TAB_W, TAB_H = 30, 86
 SNAP = 36            # cursor this close to a screen edge docks the palette there
 MARGIN = 8
+PAD_SIDE, PAD_TOP = 12, 8        # empty space between the palette's border and what's in it
+EDGE, CORNER = 6, 24             # how near the border (and its corners) a drag resizes the palette
+SHOW_IN = [("menu", "Menu bar"), ("dock", "Dock"), ("both", "Menu bar and Dock")]
+
+
+def swatch(color):
+    """A little round sample of a colour, for menus."""
+    pix = QPixmap(28, 28)
+    pix.setDevicePixelRatio(2)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(QPen(QColor(128, 128, 128, 150), 1))
+    p.setBrush(QColor(color))
+    p.drawEllipse(QRectF(1, 1, 12, 12))
+    p.end()
+    return QIcon(pix)
 
 
 class Header(QWidget):
@@ -49,7 +68,7 @@ class Panel(QWidget):
         self.hovering = None
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(12, 8, 12, 12)
+        root.setContentsMargins(PAD_SIDE, PAD_TOP, PAD_SIDE, PAD_SIDE)
         root.setSpacing(8)
         root.addWidget(self._build_header())
         root.addWidget(self._build_banner())
@@ -107,14 +126,21 @@ class Panel(QWidget):
         self.dock_btn = self._header_button("◨", "")
         self.settings_btn = self._header_button("⚙", "Settings")
         shrink = self._header_button("–", "Shrink to a bubble")
-        close = self._header_button("✕", "Hide; bring it back with your shortcut or the τ in the menu bar")
-        for b in (self.dock_btn, self.settings_btn, shrink, close):
+        self.close_btn = self._header_button("✕", "Hide")
+        for b in (self.dock_btn, self.settings_btn, shrink, self.close_btn):
             row.addWidget(b)
         self.dock_btn.clicked.connect(self.window_.toggle_dock)
         self.settings_btn.clicked.connect(self._open_settings)
-        shrink.clicked.connect(self.window_.collapse)
-        close.clicked.connect(self.ctl.hide_palette)
+        shrink.clicked.connect(lambda: self.window_.collapse())     # (clicked's bool isn't return_focus)
+        self.close_btn.clicked.connect(self.ctl.hide_palette)
         return header
+
+    def update_hints(self):
+        """Say how to get the palette back, which depends on your shortcut and where the τ icon is."""
+        ways = [self.ctl.open_label] if self.ctl.open_label else []
+        ways.append({"dock": "the τ in the Dock", "both": "the τ in the menu bar or Dock"}.get(
+            self.store["show_in"], "the τ in the menu bar"))
+        self.close_btn.setToolTip("Hide; bring it back with " + " or ".join(ways))
 
     def _build_banner(self):
         self.banner = QFrame()
@@ -342,7 +368,7 @@ class Panel(QWidget):
     # ------------------------------------------------------------------ GIF display
     def load_media(self, path):
         self.media.load(path)
-        self.media.refit(self.width() - 24, self.height())
+        self.media.refit(self.width() - 2 * PAD_SIDE, self.height())
         self.refresh_media()
 
     def refresh_media(self):
@@ -352,7 +378,7 @@ class Panel(QWidget):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        self.media.refit(self.width() - 24, self.height())
+        self.media.refit(self.width() - 2 * PAD_SIDE, self.height())
 
     def _media_menu(self, global_pos):
         menu = QMenu(self)
@@ -454,40 +480,42 @@ class Panel(QWidget):
 
         def radio(sub, options, current, apply):
             group = QActionGroup(sub)
-            for value, label in options:
+            for option in options:
+                if option is None:
+                    sub.addSeparator()
+                    continue
+                value, label = option
                 a = sub.addAction(label)
                 a.setCheckable(True)
                 a.setChecked(value == current)
                 group.addAction(a)
                 a.triggered.connect(lambda _=False, v=value: apply(v))
 
+        def check(label, on, apply):
+            a = menu.addAction(label)
+            a.setCheckable(True)
+            a.setChecked(bool(on))
+            a.toggled.connect(apply)
+
         radio(menu.addMenu("When I pick a symbol"),
               [("type", "Type it into the app I was using"),
                ("paste", "Paste it in (uses the clipboard briefly)"),
                ("copy", "Only copy it")],
               store["insert_method"], lambda v: ctl.set_setting("insert_method", v))
-        collapse = menu.addAction("Shrink to a bubble after inserting")
-        collapse.setCheckable(True)
-        collapse.setChecked(store["collapse_after_insert"])
-        collapse.toggled.connect(lambda on: ctl.set_setting("collapse_after_insert", on))
-        keys = [(k, label) for k, (label, _code, _mods) in macos.HOTKEYS.items()] + [("off", "Off")]
-        radio(menu.addMenu(f"Shortcut to open SymbolPad:  {ctl.hotkey.label or 'off'}"), keys,
-              store["hotkey"], ctl.set_hotkey)
-        glass = menu.addAction("Liquid glass")
-        glass.setCheckable(True)
-        glass.setChecked(store["glass"])
-        glass.toggled.connect(lambda on: ctl.set_setting("glass", on))
-        media = menu.addAction("Show GIF")
-        media.setCheckable(True)
-        media.setChecked(store["media_on"])
-        media.toggled.connect(ctl.set_media)
+        check("Shrink to a bubble after inserting", store["collapse_after_insert"],
+              lambda on: ctl.set_setting("collapse_after_insert", on))
+        menu.addAction(f"Shortcuts…    {ctl.open_label or 'none set'}").triggered.connect(ctl.edit_shortcuts)
+        radio(menu.addMenu("Show the τ icon in"), SHOW_IN, store["show_in"],
+              lambda v: ctl.set_setting("show_in", v))
+        menu.addSeparator()
+        radio(menu.addMenu("Look"), theme.LOOKS, store["look"], lambda v: ctl.set_setting("look", v))
+        self._color_menu(menu.addMenu("Background colour"))
+        check("RGB border", store["rgb_border"], lambda on: ctl.set_setting("rgb_border", on))
+        check("Show GIF", store["media_on"], ctl.set_media)
         menu.addAction("Choose GIF…").triggered.connect(ctl.choose_media)
-        rgb = menu.addAction("RGB border")
-        rgb.setCheckable(True)
-        rgb.setChecked(store["rgb_border"])
-        rgb.toggled.connect(lambda on: ctl.set_setting("rgb_border", on))
-        radio(menu.addMenu("Appearance"), [("system", "Match macOS"), ("light", "Light"), ("dark", "Dark")],
-              store["theme"], lambda v: ctl.set_setting("theme", v))
+        reset = menu.addAction("Reset window size")
+        reset.setEnabled(bool(store["panel_size"]))
+        reset.triggered.connect(self.window_.reset_size)
         menu.addSeparator()
         if ctl.native and macos.can_type():
             ok = menu.addAction("✓  Typing into other apps is allowed")
@@ -504,8 +532,80 @@ class Panel(QWidget):
         menu.addAction("Quit SymbolPad").triggered.connect(ctl.quit)
         menu.exec(self.settings_btn.mapToGlobal(self.settings_btn.rect().bottomLeft()))
 
+    def _color_menu(self, sub):
+        ctl, store = self.ctl, self.store
+        current = (store["bg_color"] or "").lower()
+        presets = [value for value, _name in theme.COLORS]
+        tick = "    ✓"
+        sub.addAction("None" + ("" if current else tick)).triggered.connect(lambda: ctl.set_setting("bg_color", ""))
+        sub.addSeparator()
+        for value, name in theme.COLORS:
+            a = sub.addAction(swatch(value), name + (tick if value == current else ""))
+            a.triggered.connect(lambda _=False, v=value: ctl.set_setting("bg_color", v))
+        sub.addSeparator()
+        if current and current not in presets:
+            sub.addAction(swatch(current), "Custom…" + tick).triggered.connect(ctl.choose_bg_color)
+        else:
+            sub.addAction("Custom…").triggered.connect(ctl.choose_bg_color)
+        if theme.build(store["look"]).glass:              # on glass the colour is a tint: choose how strong
+            sub.addSeparator()
+            group = QActionGroup(sub)
+            for value, name in theme.STRENGTHS:
+                a = sub.addAction(f"{name} tint")
+                a.setCheckable(True)
+                a.setChecked(value == store["bg_strength"])
+                a.setEnabled(bool(current))
+                group.addAction(a)
+                a.triggered.connect(lambda _=False, v=value: ctl.set_setting("bg_strength", v))
+
+
+class Grip(QWidget):
+    """An invisible strip along an edge or corner of the open palette; drag it to resize."""
+
+    CURSORS = {"l": Qt.CursorShape.SizeHorCursor, "r": Qt.CursorShape.SizeHorCursor,
+               "t": Qt.CursorShape.SizeVerCursor, "b": Qt.CursorShape.SizeVerCursor,
+               "tl": Qt.CursorShape.SizeFDiagCursor, "br": Qt.CursorShape.SizeFDiagCursor,
+               "tr": Qt.CursorShape.SizeBDiagCursor, "bl": Qt.CursorShape.SizeBDiagCursor}
+    # The part of each corner square that lies over the palette's contents, which must stay clickable.
+    INSIDE = {"tl": QRect(PAD_SIDE, PAD_TOP, CORNER - PAD_SIDE, CORNER - PAD_TOP),
+              "tr": QRect(0, PAD_TOP, CORNER - PAD_SIDE, CORNER - PAD_TOP),
+              "bl": QRect(PAD_SIDE, 0, CORNER - PAD_SIDE, CORNER - PAD_SIDE),
+              "br": QRect(0, 0, CORNER - PAD_SIDE, CORNER - PAD_SIDE)}
+
+    def __init__(self, window, edges):
+        super().__init__(window)
+        self.window_, self.edges = window, edges
+        self.setCursor(self.CURSORS[edges])
+        if edges in self.INSIDE:
+            self.setMask(QRegion(0, 0, CORNER, CORNER).subtracted(QRegion(self.INSIDE[edges])))
+        self.hide()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.window_.begin_resize(self.edges, e.globalPosition().toPoint())
+
+    def mouseMoveEvent(self, e):
+        self.window_.resize_to(e.globalPosition().toPoint())
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.window_.end_resize()
+
+    def paintEvent(self, _e):
+        if self.edges != "br":
+            return
+        p = QPainter(self)                      # two little lines in the corner: "drag here to resize"
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(self.window_.ctl.theme.subtext, 1.3)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        for a in (12, 16):
+            p.drawLine(QLineF(CORNER - a, CORNER - 7, CORNER - 7, CORNER - a))
+
 
 class PaletteWindow(QWidget):
+    changed = Signal()                  # shown, hidden, opened or shrunk
+
     def __init__(self, ctl):
         super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
                          | Qt.WindowType.WindowStaysOnTopHint)
@@ -516,7 +616,9 @@ class PaletteWindow(QWidget):
         # No layout on purpose: a layout would stop the window shrinking to the bubble.
         self.bubble = Bubble(self)
         self.panel = Panel(ctl, self)
+        self.grips = {edges: Grip(self, edges) for edges in ("l", "r", "t", "b", "tl", "tr", "bl", "br")}
         self._drag = None
+        self._resizing = None
         self._shortcuts()
         self.hue = 0.0                                  # where the RGB border's colours start
         self._rgb_timer = QTimer(self, interval=33, timeout=self._spin_rgb)
@@ -541,7 +643,7 @@ class PaletteWindow(QWidget):
         self.hue = (self.hue + 3) % 360
         if self.expanded:          # repaint just the edge, not the whole panel
             r = self.rect()
-            self.update(QRegion(r).subtracted(QRegion(r.adjusted(5, 5, -5, -5))))
+            self.update(QRegion(r).subtracted(QRegion(r.adjusted(10, 10, -10, -10))))
         else:
             self.bubble.update()
 
@@ -555,7 +657,16 @@ class PaletteWindow(QWidget):
     def resizeEvent(self, e):
         self.bubble.setGeometry(self.rect())
         self.panel.setGeometry(self.rect())
+        self._place_grips()
         super().resizeEvent(e)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self.changed.emit()
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        self.changed.emit()
 
     def _show_part(self, expanded):
         self.panel.setVisible(expanded)
@@ -569,6 +680,94 @@ class PaletteWindow(QWidget):
         self.bubble.theme = theme
         self.panel.set_theme(theme)
         self.update()
+        self.bubble.update()
+        self.grips["br"].update()
+
+    def glass_shape(self):
+        """Corner radius and margin of the glass behind the palette, for the form it's in now."""
+        if self.expanded:
+            return RADIUS, 0
+        if self.store["dock"] == "float":
+            return (BUBBLE - 6) / 2, 3                  # the bubble is a circle drawn 3 points in
+        return TAB_RADIUS, 0
+
+    # ------------------------------------------------------------------ size
+    def min_size(self):
+        """The smallest the open palette can be made without squashing what's in it."""
+        hint = self.panel.minimumSizeHint()
+        height = hint.height()
+        media = self.panel.media
+        if not media.isHidden():            # the GIF shrinks along with the palette, down to its smallest
+            height -= max(0, media.height() - media.SMALLEST)
+        return QSize(max(MIN_W, hint.width()), max(MIN_H, height))
+
+    def panel_size(self, area=None):
+        """Width and height of the open palette: yours if you've resized it, never bigger than the screen."""
+        area = area if area is not None else self._area()
+        try:
+            w, h = (int(v) for v in self.store["panel_size"])
+        except (TypeError, ValueError):
+            w, h = PANEL_W, PANEL_H
+        smallest = self.min_size()
+        return (min(max(w, smallest.width()), max(smallest.width(), area.width() - 2 * MARGIN)),
+                min(max(h, smallest.height()), max(smallest.height(), area.height() - 2 * MARGIN)))
+
+    def _place_grips(self):
+        """Put the resize strips along the border (only the free edge when docked)."""
+        w, h, dock = self.width(), self.height(), self.store["dock"]
+        if dock == "float":
+            spots = {"l": (0, CORNER, EDGE, h - 2 * CORNER), "r": (w - EDGE, CORNER, EDGE, h - 2 * CORNER),
+                     "t": (CORNER, 0, w - 2 * CORNER, EDGE), "b": (CORNER, h - EDGE, w - 2 * CORNER, EDGE),
+                     "tl": (0, 0, CORNER, CORNER), "tr": (w - CORNER, 0, CORNER, CORNER),
+                     "bl": (0, h - CORNER, CORNER, CORNER), "br": (w - CORNER, h - CORNER, CORNER, CORNER)}
+        elif dock == "left":
+            spots = {"r": (w - EDGE, 0, EDGE, h)}
+        else:
+            spots = {"l": (0, 0, EDGE, h)}
+        for edges, grip in self.grips.items():
+            if self.expanded and edges in spots:
+                grip.setGeometry(*spots[edges])
+                grip.show()
+                grip.raise_()
+            else:
+                grip.hide()
+
+    def begin_resize(self, edges, gpos):
+        self._resizing = {"edges": edges, "start": gpos, "geo": self.geometry()}
+
+    def resize_to(self, gpos):
+        r = self._resizing
+        if r is None:
+            return
+        g, edges, d = r["geo"], r["edges"], gpos - r["start"]
+        area, smallest = self._area(g.center()), self.min_size()
+        left, top, right, bottom = g.left(), g.top(), g.left() + g.width(), g.top() + g.height()
+        if "l" in edges:
+            left = max(area.left(), min(left + d.x(), right - smallest.width()))
+        if "r" in edges:
+            right = min(area.right() + 1, max(right + d.x(), left + smallest.width()))
+        if "t" in edges:
+            top = max(area.top(), min(top + d.y(), bottom - smallest.height()))
+        if "b" in edges:
+            bottom = min(area.bottom() + 1, max(bottom + d.y(), top + smallest.height()))
+        self.setGeometry(left, top, right - left, bottom - top)
+
+    def end_resize(self):
+        """Remember the new size, so the palette comes back to it from the bubble and next time."""
+        if self._resizing is None:
+            return
+        self._resizing = None
+        size = list(self.panel_size())
+        size[0] = self.width()
+        if self.store["dock"] == "float":
+            size[1] = self.height()
+            self.store.settings["panel_pos"] = [self.x(), self.y()]
+        self.store["panel_size"] = size
+        macos.refresh_shadow(self)
+
+    def reset_size(self):
+        self.store["panel_size"] = None
+        self.apply_layout()
 
     def _shortcuts(self):
         def add(seq, fn):
@@ -598,12 +797,13 @@ class PaletteWindow(QWidget):
         area = self._area()
         self._show_part(self.expanded)
         if self.expanded:
+            w, h = self.panel_size(area)
             if dock == "float":
-                x, y = self.store["panel_pos"] or (area.right() - PANEL_W - 40, area.top() + 50)
-                rect = QRect(x, y, PANEL_W, min(PANEL_H, area.height() - 2 * MARGIN))
+                x, y = self.store["panel_pos"] or (area.right() - w - 40, area.top() + 50)
+                rect = QRect(x, y, w, h)
             else:
-                x = area.left() + MARGIN if dock == "left" else area.right() - PANEL_W - MARGIN + 1
-                rect = QRect(x, area.top() + MARGIN, PANEL_W, area.height() - 2 * MARGIN)
+                x = area.left() + MARGIN if dock == "left" else area.right() - w - MARGIN + 1
+                rect = QRect(x, area.top() + MARGIN, w, area.height() - 2 * MARGIN)
         else:
             self.bubble.side = dock
             if dock == "float":
@@ -614,16 +814,19 @@ class PaletteWindow(QWidget):
                 x = area.left() if dock == "left" else area.right() - TAB_W + 1
                 rect = QRect(x, cy - TAB_H // 2, TAB_W, TAB_H)
         self.setGeometry(self._clamp(rect, area))
+        self._place_grips()
         self.panel.update_dock_button(dock)
         self.update()
         self.ctl.update_glass()
+        self.changed.emit()
 
     def expand(self):
         if self.expanded:
             return
         if self.store["dock"] == "float":
             g, area = self.geometry(), self._area()
-            x = g.right() - PANEL_W + 1 if g.center().x() > area.center().x() else g.left()
+            w = self.panel_size(area)[0]
+            x = g.right() - w + 1 if g.center().x() > area.center().x() else g.left()
             self.store.settings["panel_pos"] = [x, g.top()]
         self.store["expanded"] = True
         self.apply_layout()
@@ -682,8 +885,8 @@ class PaletteWindow(QWidget):
                 self.bubble.side = "float"
                 self.panel.update_dock_button("float")
                 if self.expanded:
-                    size = (PANEL_W, min(PANEL_H, self._area(gpos).height() - 2 * MARGIN))
-                    d["offset"] = QPoint(min(d["offset"].x(), PANEL_W - 60), min(d["offset"].y(), 24))
+                    size = self.panel_size(self._area(gpos))
+                    d["offset"] = QPoint(min(d["offset"].x(), size[0] - 60), min(d["offset"].y(), 24))
                 else:
                     size = (BUBBLE, BUBBLE)
                     d["offset"] = QPoint(BUBBLE // 2, BUBBLE // 2)
@@ -725,23 +928,20 @@ class PaletteWindow(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
-        body = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        if self.store["glass"]:
-            p.setBrush(theme.glass_tint(t))
-            p.drawRoundedRect(body, 14, 14)
-            shine = QLinearGradient(body.topLeft(), body.bottomLeft())    # light catching the top edge
-            shine.setColorAt(0.0, QColor(255, 255, 255, 70 if t.dark else 110))
-            shine.setColorAt(0.18, QColor(255, 255, 255, 0))
-            p.setBrush(QBrush(shine))
-            p.drawRoundedRect(body, 14, 14)
-        else:
+        body = QRectF(self.rect())
+        if t.glass and not self.ctl.glass_kind:          # glass isn't available here: fall back to solid
             p.setBrush(t.bg)
-            p.drawRoundedRect(body, 14, 14)
+            p.drawRoundedRect(body, RADIUS, RADIUS)
+        # Over glass this is only a faint tint (or your colour); macOS draws the glass underneath.
+        p.setBrush(t.panel)
+        p.drawRoundedRect(body, RADIUS, RADIUS)
         if self.rgb_on:
             p.setPen(QPen(self.rainbow(self.rect()), 3))
             inset = 1.5
+        elif self.ctl.glass_kind == "glass":
+            return                                       # real glass has its own bright rim
         else:
             p.setPen(QPen(t.border, 1))
             inset = 0.5
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(inset, inset, -inset, -inset), 14, 14)
+        p.drawRoundedRect(body.adjusted(inset, inset, -inset, -inset), RADIUS - inset, RADIUS - inset)

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QLabel, QListView
 from .symbols import code_of, display_text, is_combining
 
 CHAR_ROLE = Qt.ItemDataRole.UserRole
+TAB_RADIUS = 12      # corners of the tab the palette shrinks to at a screen edge
 
 
 # --------------------------------------------------------------------------- symbol grid
@@ -70,6 +71,9 @@ class SymbolDelegate(QStyledItemDelegate):
         if width > r.width() - 4:                      # long arrows, ligatures ...
             font.setPixelSize(max(9, int(self.font_px * (r.width() - 4) / width)))
         p.setFont(font)
+        if t.glass and t.dark:                         # a soft shadow keeps symbols readable on bright glass
+            p.setPen(QColor(0, 0, 0, 60))
+            p.drawText(r.translated(0, 1), Qt.AlignmentFlag.AlignCenter, text)
         p.setPen(t.text)
         p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
         p.restore()
@@ -250,6 +254,7 @@ class MediaView(QWidget):
     """A GIF that replays forever (or a still picture) in the panel's spare space."""
 
     menu_requested = Signal(QPoint)
+    SMALLEST = 80                        # never shorter than this
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -298,8 +303,8 @@ class MediaView(QWidget):
 
     def refit(self, width, panel_height):
         """As tall as the picture needs at this width, leaving most of the panel for symbols."""
-        tallest = max(80, int(panel_height * 0.3))
-        self.setFixedHeight(max(80, min(int(width / self._aspect), tallest)))
+        tallest = max(self.SMALLEST, int(panel_height * 0.3))
+        self.setFixedHeight(max(self.SMALLEST, min(int(width / self._aspect), tallest)))
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -490,31 +495,38 @@ class Bubble(QWidget):
         t = self.theme
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        accent = t.accent.lighter(112) if self._hover else t.accent
         r = QRectF(self.rect())
+        shape = QPainterPath()
+        if self.side == "float":
+            shape.addEllipse(r.adjusted(3, 3, -3, -3))
+        elif t.glass:                                   # a glass capsule, the shape macOS gives the glass
+            shape.addRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), TAB_RADIUS, TAB_RADIUS)
+        else:                                           # a tab hugging the screen edge: only the inner corners are round
+            if self.side == "right":
+                shape.addRoundedRect(r.adjusted(0.5, 0.5, TAB_RADIUS, -0.5), TAB_RADIUS, TAB_RADIUS)
+            else:
+                shape.addRoundedRect(r.adjusted(-TAB_RADIUS, 0.5, -0.5, -0.5), TAB_RADIUS, TAB_RADIUS)
+            p.setClipRect(r)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(t.bubble.lighter(112) if self._hover and t.bubble.alpha() == 255 else t.bubble)
+        p.drawPath(shape)
+        if self._hover and t.bubble.alpha() < 255:      # see-through bubbles brighten instead
+            p.setBrush(t.hover)
+            p.drawPath(shape)
         if self.window_.rgb_on:
             p.setPen(QPen(self.window_.rainbow(self.rect()), 3))
+        elif t.glass and self.window_.ctl.glass_kind == "glass":
+            p.setPen(Qt.PenStyle.NoPen)                 # real glass already has a bright rim
         else:
-            p.setPen(QPen(QColor(255, 255, 255, 70), 1))
-        p.setBrush(accent)
-        if self.side == "float":
-            p.drawEllipse(r.adjusted(3, 3, -3, -3))
-            glyph_rect = r
-        else:
-            # tab hugging the screen edge: round only the inner corners
-            path = QPainterPath()
-            radius = 12
-            if self.side == "right":
-                body = r.adjusted(0.5, 0.5, radius, -0.5)
-            else:
-                body = r.adjusted(-radius, 0.5, -0.5, -0.5)
-            path.addRoundedRect(body, radius, radius)
-            p.setClipRect(r)
-            p.drawPath(path)
-            glyph_rect = r
+            p.setPen(QPen(QColor(255, 255, 255, 70) if t.dark or not t.glass else t.border, 1))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(shape)
         font = p.font()
         font.setPixelSize(22 if self.side == "float" else 18)
         font.setBold(True)
         p.setFont(font)
-        p.setPen(QColor("white"))
-        p.drawText(glyph_rect, Qt.AlignmentFlag.AlignCenter, "τ")
+        if t.glass and t.dark:
+            p.setPen(QColor(0, 0, 0, 70))
+            p.drawText(r.translated(0, 1), Qt.AlignmentFlag.AlignCenter, "τ")
+        p.setPen(t.bubble_text)
+        p.drawText(r, Qt.AlignmentFlag.AlignCenter, "τ")

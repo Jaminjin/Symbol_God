@@ -21,14 +21,60 @@ except ImportError:          # not on a Mac, or PyObjC isn't installed
     AVAILABLE = False
 
 _activity = None
+_dock_click = None
+# Qt sometimes lifts the always-on-top palette to the "modal panel" level; this is one above that.
+_OVER_PALETTE = 9
 
 
 # --------------------------------------------------------------------------- app & window
-def make_accessory_app():
-    """No Dock icon or app-switcher entry; SymbolPad lives in its palette and the menu bar."""
-    if AVAILABLE:
-        AppKit.NSApplication.sharedApplication().setActivationPolicy_(
-            AppKit.NSApplicationActivationPolicyAccessory)
+def show_in_dock(on):
+    """With a Dock icon SymbolPad is an ordinary app (also in ⌘-Tab); without, it lives in the menu bar."""
+    if not AVAILABLE:
+        return
+    app = AppKit.NSApplication.sharedApplication()
+    policy = AppKit.NSApplicationActivationPolicyRegular if on else AppKit.NSApplicationActivationPolicyAccessory
+    if app.activationPolicy() != policy:
+        app.setActivationPolicy_(policy)
+
+
+def is_in_dock():
+    return AVAILABLE and (AppKit.NSApplication.sharedApplication().activationPolicy()
+                          == AppKit.NSApplicationActivationPolicyRegular)
+
+
+def on_dock_click(callback):
+    """Call `callback` when the Dock icon is clicked (or the app is opened again while running).
+
+    Qt owns the application delegate; it passes anything it doesn't handle itself
+    on to a "reflection delegate", which is where this listens.
+    """
+    global _dock_click
+    if not AVAILABLE:
+        return False
+    try:
+        if _dock_click is None:
+            class SymbolPadDockClick(AppKit.NSObject):
+                callback = None
+
+                @objc.typedSelector(b"Z@:@Z")
+                def applicationShouldHandleReopen_hasVisibleWindows_(self, _app, _has_visible_windows):
+                    try:
+                        if self.callback is not None:
+                            self.callback()
+                    except Exception:
+                        traceback.print_exc()
+                    return True
+
+            _dock_click = SymbolPadDockClick.alloc().init()
+        _dock_click.callback = callback
+        delegate = AppKit.NSApplication.sharedApplication().delegate()
+        if delegate is None or not delegate.respondsToSelector_(b"setReflectionDelegate:"):
+            return False
+        delegate.setReflectionDelegate_(_dock_click)
+        return True
+    except Exception:
+        traceback.print_exc()
+        return False
 
 
 def keep_responsive():
@@ -39,64 +85,146 @@ def keep_responsive():
             AppKit.NSActivityUserInitiatedAllowingIdleSystemSleep, "Floating symbol palette")
 
 
-def float_above_everything(widget):
-    """Show the window on every Space, over full-screen apps, even when SymbolPad isn't active."""
+def _ns_window(widget):
+    """The NSWindow behind a Qt window, or None when Qt isn't drawing real Mac windows (tests)."""
     if not AVAILABLE:
-        return
+        return None
+    from PySide6.QtGui import QGuiApplication
+    if QGuiApplication.platformName() != "cocoa":
+        return None                    # winId() is only an NSView when Qt uses its Mac ("cocoa") backend
+    return objc.objc_object(c_void_p=int(widget.winId())).window()
+
+
+def float_above_everything(widget, over_palette=False):
+    """Show the window on every Space, over full-screen apps, even when SymbolPad isn't active.
+
+    over_palette  for SymbolPad's own little windows, which must never end up underneath the palette.
+    """
     try:
-        window = objc.objc_object(c_void_p=int(widget.winId())).window()
+        window = _ns_window(widget)
         if window is None:
             return
         window.setCollectionBehavior_(AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
                                       | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary)
-        window.setLevel_(AppKit.NSFloatingWindowLevel)
+        window.setLevel_(_OVER_PALETTE if over_palette else AppKit.NSFloatingWindowLevel)
         window.setHidesOnDeactivate_(False)
     except Exception:
         traceback.print_exc()
 
 
-_glass_views = {}
-
-
-def set_glass(widget, on, radius=14.0):
-    """Put Apple's Liquid Glass (or the older blur on earlier macOS) behind a window.
-
-    The glass view sits underneath Qt's content, so it shows through wherever
-    SymbolPad paints see-through colours.
-    """
+def raise_color_panel():
+    """Keep macOS's colour picker in front of the palette it is colouring."""
     if not AVAILABLE:
         return
     try:
-        window = objc.objc_object(c_void_p=int(widget.winId())).window()
+        panel = AppKit.NSColorPanel.sharedColorPanel()
+        panel.setLevel_(_OVER_PALETTE)
+        panel.orderFront_(None)
+    except Exception:
+        traceback.print_exc()
+
+
+_glass_views = {}
+_frame_layers = {}      # how each window's frame layer was before the glass rounded it
+
+
+def _round_window(widget, frame, radius):
+    """Clip everything in the window to a rounded shape (None puts it back as it was).
+
+    A window with glass in it gets its shadow from the window's outline rather
+    than from what's drawn, and that outline has tighter corners than the glass:
+    without this, a thin line and a faint wedge show outside each corner as soon
+    as anything (a colour, the RGB border) is drawn over the glass.
+    """
+    layer = frame.layer()
+    if layer is None and radius is not None:
+        frame.setWantsLayer_(True)          # a window that has only just appeared doesn't have its layer yet
+        layer = frame.layer()
+    if layer is None:
+        return
+    key = id(widget)
+    if radius is None:
+        if key in _frame_layers:
+            was_radius, was_masking = _frame_layers.pop(key)
+            layer.setCornerRadius_(was_radius)
+            layer.setMasksToBounds_(was_masking)
+        return
+    _frame_layers.setdefault(key, (layer.cornerRadius(), layer.masksToBounds()))
+    layer.setCornerRadius_(radius)
+    layer.setMasksToBounds_(True)
+
+
+def set_glass(widget, on, radius=20.0, clear=False, dark=True, inset=0.0):
+    """Put Apple's Liquid Glass behind a window (the plain blur on macOS older than 26).
+
+    The glass is a real system view underneath Qt's content, so it shows wherever
+    SymbolPad paints see-through colours, and macOS does the blur, the bending of
+    light at the edges and the bright rim itself.
+
+    clear   Apple's "clear" glass, which you can see straight through, instead of
+            the regular glass that blurs what's behind it.
+    dark    the dark or the light variety of the material.
+    inset   leave this many points free around the glass (the round bubble).
+
+    Returns "glass", "blur" (older macOS) or "" (nothing shown).
+    """
+    try:
+        window = _ns_window(widget)
         content = window.contentView() if window is not None else None
         if content is None or content.superview() is None:
-            return
+            return ""
+        frame = content.superview()
         view = _glass_views.get(id(widget))
+        if view is not None and view.superview() is not frame:    # Qt made a new window for the widget
+            view = None
+            _frame_layers.pop(id(widget), None)
         if not on:
             if view is not None:
                 view.setHidden_(True)
-            return
+            _round_window(widget, frame, None)
+            window.invalidateShadow()
+            return ""
+        glass_class = getattr(AppKit, "NSGlassEffectView", None)
         if view is None:
-            glass_class = getattr(AppKit, "NSGlassEffectView", None)
             if glass_class is not None:                       # macOS 26+: real Liquid Glass
                 view = glass_class.alloc().initWithFrame_(content.frame())
-                view.setCornerRadius_(radius)
             else:                                             # older macOS: frosted blur
                 view = AppKit.NSVisualEffectView.alloc().initWithFrame_(content.frame())
-                view.setMaterial_(AppKit.NSVisualEffectMaterialHUDWindow)
                 view.setBlendingMode_(AppKit.NSVisualEffectBlendingModeBehindWindow)
                 view.setState_(AppKit.NSVisualEffectStateActive)
                 view.setWantsLayer_(True)
-                view.layer().setCornerRadius_(radius)
                 view.layer().setMasksToBounds_(True)
             view.setAutoresizingMask_(AppKit.NSViewWidthSizable | AppKit.NSViewHeightSizable)
-            content.superview().addSubview_positioned_relativeTo_(view, AppKit.NSWindowBelow, content)
+            frame.addSubview_positioned_relativeTo_(view, AppKit.NSWindowBelow, content)
             _glass_views[id(widget)] = view
-        view.setFrame_(content.frame())
+        is_glass = glass_class is not None and view.isKindOfClass_(glass_class)
+        view.setAppearance_(AppKit.NSAppearance.appearanceNamed_(
+            AppKit.NSAppearanceNameDarkAqua if dark else AppKit.NSAppearanceNameAqua))
+        if is_glass:
+            view.setStyle_(AppKit.NSGlassEffectViewStyleClear if clear else AppKit.NSGlassEffectViewStyleRegular)
+            view.setCornerRadius_(radius)
+        else:
+            view.setMaterial_(AppKit.NSVisualEffectMaterialHUDWindow if dark
+                              else AppKit.NSVisualEffectMaterialPopover)
+            view.layer().setCornerRadius_(radius)
+        view.setFrame_(AppKit.NSInsetRect(content.frame(), inset, inset))
         view.setHidden_(False)
+        _round_window(widget, frame, radius + inset)
         window.setOpaque_(False)
         window.setBackgroundColor_(AppKit.NSColor.clearColor())
         window.invalidateShadow()
+        return "glass" if is_glass else "blur"
+    except Exception:
+        traceback.print_exc()
+        return ""
+
+
+def refresh_shadow(widget):
+    """Redraw the window's shadow after its shape changed."""
+    try:
+        window = _ns_window(widget)
+        if window is not None:
+            window.invalidateShadow()
     except Exception:
         traceback.print_exc()
 
@@ -311,16 +439,105 @@ class _EventHotKeyID(ctypes.Structure):
 
 
 _HANDLER = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
-_CMD, _SHIFT, _OPTION, _CONTROL = 1 << 8, 1 << 9, 1 << 11, 1 << 12
+_CMD, _SHIFT, _OPTION, _CONTROL = 1 << 8, 1 << 9, 1 << 11, 1 << 12           # Carbon's modifier bits
+_NS_SHIFT, _NS_CONTROL, _NS_OPTION, _NS_COMMAND = 1 << 17, 1 << 18, 1 << 19, 1 << 20   # NSEvent's
 
-# id: (label, virtual key code, Carbon modifiers)
-HOTKEYS = {
-    "ctrl+alt+s": ("⌃⌥S", 1, _CONTROL | _OPTION),
-    "ctrl+shift+s": ("⌃⇧S", 1, _CONTROL | _SHIFT),
-    "alt+cmd+s": ("⌥⌘S", 1, _OPTION | _CMD),
-    "ctrl+alt+cmd+s": ("⌃⌥⌘S", 1, _CONTROL | _OPTION | _CMD),
-    "ctrl+shift+space": ("⌃⇧Space", 49, _CONTROL | _SHIFT),
+# Keys that have a name rather than a character (Mac virtual key codes).
+_KEY_NAMES = {
+    36: "↩", 48: "⇥", 49: "Space", 51: "⌫", 53: "⎋", 76: "⌤", 117: "⌦",
+    123: "←", 124: "→", 125: "↓", 126: "↑", 115: "↖", 119: "↘", 116: "⇞", 121: "⇟",
+    122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6", 98: "F7", 100: "F8", 101: "F9",
+    109: "F10", 103: "F11", 111: "F12", 105: "F13", 107: "F14", 113: "F15", 106: "F16", 64: "F17",
+    79: "F18", 80: "F19", 90: "F20",
 }
+_FUNCTION_KEYS = {code for code, name in _KEY_NAMES.items() if name.startswith("F")}
+# What each key types on a US keyboard, for when macOS can't tell us.
+_US_KEYS = {
+    0: "A", 1: "S", 2: "D", 3: "F", 4: "H", 5: "G", 6: "Z", 7: "X", 8: "C", 9: "V", 11: "B", 12: "Q",
+    13: "W", 14: "E", 15: "R", 16: "Y", 17: "T", 18: "1", 19: "2", 20: "3", 21: "4", 22: "6", 23: "5",
+    24: "=", 25: "9", 26: "7", 27: "-", 28: "8", 29: "0", 30: "]", 31: "O", 32: "U", 33: "[", 34: "I",
+    35: "P", 37: "L", 38: "J", 39: "'", 40: "K", 41: ";", 42: "\\", 43: ",", 44: "/", 45: "N", 46: "M",
+    47: ".", 50: "`",
+}
+ESCAPE_KEY, DELETE_KEY = 53, 51
+
+
+def shortcut_from_key(code, flags, char=""):
+    """Describe a key press as a shortcut: {"code", "mods", "label"}.
+
+    `flags` are NSEvent modifier flags and `char` is what the key types on its
+    own.  Returns None for a key that can't be a system-wide shortcut by itself
+    (anything without ⌘, ⌃ or ⌥, other than the F keys), since that would
+    stop the key from typing in every other app.
+    """
+    mods, label = 0, ""
+    for ns_bit, carbon_bit, symbol in ((_NS_CONTROL, _CONTROL, "⌃"), (_NS_OPTION, _OPTION, "⌥"),
+                                       (_NS_SHIFT, _SHIFT, "⇧"), (_NS_COMMAND, _CMD, "⌘")):
+        if flags & ns_bit:
+            mods |= carbon_bit
+            label += symbol
+    if not mods & (_CMD | _OPTION | _CONTROL) and code not in _FUNCTION_KEYS:
+        return None
+    name = _KEY_NAMES.get(code)
+    if name is None:
+        char = (char or "").strip()
+        name = char.upper() if len(char) == 1 and char.isprintable() else _US_KEYS.get(code, f"Key {code}")
+    return {"code": int(code), "mods": mods, "label": label + name}
+
+
+def valid_shortcut(spec):
+    return (isinstance(spec, dict) and isinstance(spec.get("code"), int) and isinstance(spec.get("mods"), int)
+            and 0 <= spec["code"] < 128)
+
+
+def same_shortcut(a, b):
+    return bool(a) and bool(b) and (a.get("code"), a.get("mods")) == (b.get("code"), b.get("mods"))
+
+
+def shortcut_label(spec):
+    return (spec.get("label") or f"Key {spec.get('code')}") if spec else ""
+
+
+class KeyCapture:
+    """While started, hands every key pressed inside SymbolPad to `callback(code, flags, char)`.
+
+    Used to record a shortcut.  The key presses are swallowed, so pressing ⌘Q
+    or ⌘W as the new shortcut doesn't quit SymbolPad or close its window.
+    """
+
+    def __init__(self, callback):
+        self._callback = callback
+        self._monitor = None
+
+    @property
+    def active(self):
+        return self._monitor is not None
+
+    def start(self):
+        if not AVAILABLE:
+            return False
+        if self._monitor is None:
+            self._monitor = AppKit.NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+                AppKit.NSEventMaskKeyDown, self._pressed)
+        return self._monitor is not None
+
+    def stop(self):
+        if self._monitor is not None:
+            AppKit.NSEvent.removeMonitor_(self._monitor)
+            self._monitor = None
+
+    def _pressed(self, event):
+        try:
+            if not event.isARepeat():
+                try:
+                    char = event.charactersByApplyingModifiers_(0) or ""     # what the key types by itself
+                except Exception:
+                    char = event.charactersIgnoringModifiers() or ""
+                self._callback(int(event.keyCode()), int(event.modifierFlags()), str(char))
+        except Exception:
+            traceback.print_exc()
+        return None                                # swallow the key press
+
 
 _carbon_lib = None
 
@@ -347,26 +564,38 @@ def _carbon():
                                             ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
         lib.UnregisterEventHotKey.restype = ctypes.c_int32
         lib.UnregisterEventHotKey.argtypes = [ctypes.c_void_p]
+        lib.GetEventParameter.restype = ctypes.c_int32
+        lib.GetEventParameter.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+                                          ctypes.c_ulong, ctypes.c_void_p, ctypes.c_void_p]
         _carbon_lib = lib
     return _carbon_lib
 
 
-class GlobalHotkey:
-    """A system-wide shortcut via Carbon's RegisterEventHotKey (needs no permissions)."""
+class GlobalHotkeys:
+    """System-wide shortcuts via Carbon's RegisterEventHotKey (needs no permissions).
 
-    def __init__(self, callback):
-        self._callback = callback
-        self._hotkey_ref = ctypes.c_void_p()
+    Each shortcut has a name ("open", "close"); `set` replaces whatever that
+    name was bound to before.
+    """
+
+    def __init__(self):
+        self._handler = _HANDLER(self._fired)     # must stay alive while installed
         self._handler_ref = ctypes.c_void_p()
-        self._handler = _HANDLER(self._fired)     # must stay alive while registered
-        self.label = ""
+        self._numbers = {}                        # name -> the number Carbon reports back
+        self._refs = {}                           # name -> Carbon's registration
+        self._callbacks = {}                      # number -> function
+        self._specs = {}                          # name -> the shortcut registered now
 
-    def set(self, hotkey_id):
-        """Register one of HOTKEYS (or none).  Returns False if it couldn't be registered."""
-        self.clear()
-        spec = HOTKEYS.get(hotkey_id)
+    def spec(self, name):
+        return self._specs.get(name)
+
+    def set(self, name, spec, callback):
+        """Bind `name` to a shortcut (None removes it).  False means macOS refused the shortcut."""
+        self.clear(name)
+        if not spec:
+            return True
         carbon = _carbon()
-        if spec is None or carbon is None:
+        if carbon is None or not valid_shortcut(spec):
             return False
         target = carbon.GetApplicationEventTarget()
         if not self._handler_ref:
@@ -375,24 +604,33 @@ class GlobalHotkey:
                                           ctypes.byref(self._handler_ref)) != 0:
                 self._handler_ref = ctypes.c_void_p()
                 return False
-        label, code, mods = spec
-        err = carbon.RegisterEventHotKey(code, mods, _EventHotKeyID(_fourcc("SymP"), 1), target, 0,
-                                         ctypes.byref(self._hotkey_ref))
-        if err != 0:
-            self._hotkey_ref = ctypes.c_void_p()
+        number = self._numbers.setdefault(name, len(self._numbers) + 1)
+        ref = ctypes.c_void_p()
+        err = carbon.RegisterEventHotKey(spec["code"], spec["mods"], _EventHotKeyID(_fourcc("SymP"), number),
+                                         target, 0, ctypes.byref(ref))
+        if err != 0 or not ref:
             return False
-        self.label = label
+        self._refs[name], self._callbacks[number], self._specs[name] = ref, callback, dict(spec)
         return True
 
-    def clear(self):
-        if self._hotkey_ref:
-            _carbon().UnregisterEventHotKey(self._hotkey_ref)
-            self._hotkey_ref = ctypes.c_void_p()
-        self.label = ""
+    def clear(self, name=None):
+        """Remove one shortcut, or all of them."""
+        for key in ([name] if name is not None else list(self._refs)):
+            ref = self._refs.pop(key, None)
+            if ref:
+                _carbon().UnregisterEventHotKey(ref)
+            self._specs.pop(key, None)
+            self._callbacks.pop(self._numbers.get(key), None)
 
-    def _fired(self, _call_ref, _event, _user_data):
+    def _fired(self, _call_ref, event, _user_data):
         try:
-            self._callback()
+            pressed = _EventHotKeyID()
+            # kEventParamDirectObject ('----') as a typeEventHotKeyID ('hkid')
+            err = _carbon().GetEventParameter(event, _fourcc("----"), _fourcc("hkid"), None,
+                                              ctypes.sizeof(pressed), None, ctypes.byref(pressed))
+            callback = self._callbacks.get(pressed.id) if err == 0 else None
+            if callback is not None:
+                callback()
         except Exception:
             traceback.print_exc()
         return 0
