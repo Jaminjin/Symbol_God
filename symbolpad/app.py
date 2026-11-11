@@ -64,8 +64,10 @@ class Controller(QObject):
         self.window.changed.connect(self.refresh_hotkeys)
         app.styleHints().colorSchemeChanged.connect(lambda *_: self.apply_theme())
         app.applicationStateChanged.connect(self._app_state_changed)
+        self._want_dock = False
         if self.native:
             macos.on_dock_click(lambda: QTimer.singleShot(0, self.window.summon))
+            macos.on_space_change(lambda: QTimer.singleShot(0, self._space_changed))
         self.apply_theme()
         self._check_fonts()
 
@@ -225,13 +227,28 @@ class Controller(QObject):
         where = self.store["show_in"]
         if where not in ("menu", "dock", "both") or (self.tray is None and where == "menu"):
             where = "menu" if self.tray is not None else "dock"      # there must always be a way back in
-        if self.native:
-            macos.show_in_dock(where != "menu")
+        self._want_dock = where != "menu"
+        self.sync_dock_icon()
         if self.tray is not None:
             self.tray.setVisible(where != "dock")
             for value, action in self._tray_show_in.items():
                 action.setChecked(value == where)
         self.window.panel.update_hints()
+
+    def sync_dock_icon(self):
+        """Show the Dock icon if you chose it, except on another app's full-screen page.
+
+        There macOS would keep the palette off the page and throw you back to the
+        desktop whenever SymbolPad came forward.  The Dock is hidden on those pages
+        anyway, so the icon simply comes back when you return to a desktop.
+        """
+        if self.native:
+            macos.show_in_dock(self._want_dock and not macos.on_full_screen_page())
+
+    def _space_changed(self):
+        self.sync_dock_icon()
+        if self.window.isVisible():
+            macos.float_above_everything(self.window)
 
     def _app_state_changed(self, state):
         # With a Dock icon you can also come back with ⌘-Tab, which doesn't count as a Dock click.
@@ -279,6 +296,7 @@ class Controller(QObject):
 
     def focus_palette(self):
         if self.native:
+            self.sync_dock_icon()               # before coming forward, or macOS may switch Space
             macos.bring_self_to_front()
         self.window.raise_()
         self.window.activateWindow()

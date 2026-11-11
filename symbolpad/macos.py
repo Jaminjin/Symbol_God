@@ -42,6 +42,71 @@ def is_in_dock():
                           == AppKit.NSApplicationActivationPolicyRegular)
 
 
+_cgs = None
+
+
+def _cf_release(ref):
+    cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    cf.CFRelease.argtypes = [ctypes.c_void_p]
+    cf.CFRelease(ref)
+
+
+def on_full_screen_page():
+    """True while you're looking at another app's full-screen Space.
+
+    macOS keeps the windows of apps with a Dock icon off those Spaces, and switches
+    you back to the desktop when such an app comes forward.  Asks the window server
+    (read only); if that ever stops working this says False and nothing changes.
+    """
+    global _cgs
+    if not AVAILABLE:
+        return False
+    try:
+        if _cgs is None:
+            lib = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+            lib.CGSMainConnectionID.restype = ctypes.c_int
+            lib.CGSGetActiveSpace.restype = ctypes.c_uint64
+            lib.CGSGetActiveSpace.argtypes = [ctypes.c_int]
+            lib.CGSCopyManagedDisplaySpaces.restype = ctypes.c_void_p
+            lib.CGSCopyManagedDisplaySpaces.argtypes = [ctypes.c_int]
+            _cgs = lib
+        connection = _cgs.CGSMainConnectionID()
+        active = _cgs.CGSGetActiveSpace(connection)
+        ref = _cgs.CGSCopyManagedDisplaySpaces(connection)
+        if not ref:
+            return False
+        displays = objc.objc_object(c_void_p=ref)      # Python now holds its own reference ...
+        _cf_release(ref)                               # ... so let go of the one the copy gave us
+        for display in displays:
+            for space in display.get("Spaces", []):
+                if int(space.get("ManagedSpaceID", 0)) == active:
+                    return int(space.get("type", 0)) == 4          # 4 = an app in full screen
+        return False
+    except Exception:
+        traceback.print_exc()
+        return False
+
+
+_space_observer = None
+
+
+def on_space_change(callback):
+    """Call `callback` whenever you switch Space (desktop or full-screen page)."""
+    global _space_observer
+    if not AVAILABLE or _space_observer is not None:
+        return
+    center = AppKit.NSWorkspace.sharedWorkspace().notificationCenter()
+
+    def changed(_note):
+        try:
+            callback()
+        except Exception:
+            traceback.print_exc()
+
+    _space_observer = center.addObserverForName_object_queue_usingBlock_(
+        AppKit.NSWorkspaceActiveSpaceDidChangeNotification, None, None, changed)
+
+
 def on_dock_click(callback):
     """Call `callback` when the Dock icon is clicked (or the app is opened again while running).
 

@@ -120,7 +120,9 @@ was the first match about 9 times out of 10, and in the top five nearly always.
   - *Closing* either hides the palette or shrinks it to the bubble.
   - **Esc** cancels, **⌫** removes a shortcut.
 - **Show the τ icon in**: the menu bar, the Dock, or both. With a Dock icon, SymbolPad
-  also appears in ⌘-Tab, and clicking the icon opens the palette.
+  also appears in ⌘-Tab, and clicking the icon opens the palette. On another app's
+  full-screen page the Dock icon steps aside (the Dock is hidden there anyway), because
+  macOS won't let an app with a Dock icon float over full-screen apps.
 - **Look**
   - *Liquid Glass · dark, like Launchpad* (default): blurred, colourful glass with white text.
   - *Liquid Glass · light*: the bright variety, with dark text.
