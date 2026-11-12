@@ -18,7 +18,7 @@ from PySide6.QtCore import QObject, Qt, QTimer, Signal, qVersion
 from PySide6.QtGui import QActionGroup, QColor, QFont, QIcon, QImageReader, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QColorDialog, QFileDialog, QMenu, QSystemTrayIcon
 
-from . import glyphs, macos, theme
+from . import glyphs, macos, mathexpr, theme
 from .engine import DrawingEngine
 from .icon import app_icon
 from .inserter import Inserter
@@ -274,6 +274,30 @@ class Controller(QObject):
         self.inserter.insert(ch)
         if self.store["collapse_after_insert"]:
             self.window.collapse(return_focus=False)
+
+    def insert_maths(self, source, as_text):
+        """Put what was typed on the Equation page into the app you were in: as ordinary characters
+        (6², Cl₂) or as a built-up equation, which Word makes a real one of."""
+        tree = mathexpr.parse(source)
+        if mathexpr.is_empty(tree):
+            return
+        text = mathexpr.to_text(tree)[0]
+        self.store.record_equation(source)
+        if as_text:
+            self.inserter.insert(text)
+        else:
+            self.inserter.insert_equation(mathexpr.to_mathml(tree), text)
+        if self.store["collapse_after_insert"]:
+            self.window.collapse(return_focus=False)
+
+    def copy_maths(self, source):
+        tree = mathexpr.parse(source)
+        if mathexpr.is_empty(tree):
+            return
+        text = mathexpr.to_text(tree)[0]
+        self.store.record_equation(source)
+        self.inserter.copy_equation(mathexpr.to_mathml(tree), text)
+        self.show_toast("Copied · ⌘V makes an equation in Word")
 
     def copy(self, ch):
         self.inserter.copy(ch)

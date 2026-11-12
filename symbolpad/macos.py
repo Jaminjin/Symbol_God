@@ -430,6 +430,55 @@ def press_paste():
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
 
+# --------------------------------------------------------------------------- the clipboard, in several forms
+MATHML = "public.mathml"                 # Word turns this into a real equation when it's pasted
+PLAIN_TEXT = "public.utf8-plain-text"
+
+
+def clipboard_snapshot():
+    """Everything on the clipboard, to put back with restore_clipboard."""
+    if not AVAILABLE:
+        return []
+    items = AppKit.NSPasteboard.generalPasteboard().pasteboardItems() or []
+    return [{kind: item.dataForType_(kind) for kind in item.types()} for item in items]
+
+
+def _write_clipboard(items):
+    board = AppKit.NSPasteboard.generalPasteboard()
+    board.clearContents()
+    made = []
+    for contents in items:
+        item = AppKit.NSPasteboardItem.alloc().init()
+        for kind, data in contents.items():
+            if data is not None:
+                item.setData_forType_(data, kind)
+        made.append(item)
+    if made:
+        board.writeObjects_(made)
+
+
+def set_clipboard(contents):
+    """Put one thing on the clipboard in several forms at once: {kind: text}.  False if it couldn't."""
+    if not AVAILABLE:
+        return False
+    try:
+        _write_clipboard([{kind: AppKit.NSData.dataWithBytes_length_(text.encode(), len(text.encode()))
+                           for kind, text in contents.items()}])
+        return True
+    except Exception:
+        traceback.print_exc()
+        return False
+
+
+def restore_clipboard(snapshot):
+    if not AVAILABLE or snapshot is None:
+        return
+    try:
+        _write_clipboard(snapshot)
+    except Exception:
+        traceback.print_exc()
+
+
 # --------------------------------------------------------------------------- font coverage
 class _CFRange(ctypes.Structure):
     _fields_ = [("location", ctypes.c_long), ("length", ctypes.c_long)]

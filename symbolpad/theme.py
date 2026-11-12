@@ -223,6 +223,11 @@ def stylesheet(t: Theme):
     }}
     QToolButton#category:hover {{ background: {c['hover']}; }}
     QToolButton#category::menu-indicator {{ image: none; width: 0px; }}
+    QToolButton#tile {{
+        background: {c['field']}; border: none; border-radius: 8px; padding: 2px; font-size: 15px;
+    }}
+    QToolButton#tile:hover {{ background: {c['hover']}; }}
+    QPushButton#link:disabled {{ background: {c['field']}; color: {c['subtext']}; }}
     QPushButton#small {{
         background: {c['field']}; border: none; border-radius: 9px; padding: 4px 10px;
     }}

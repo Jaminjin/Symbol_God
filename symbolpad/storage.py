@@ -33,13 +33,15 @@ DEFAULTS = {
     "media_on": False,             # show the looping GIF in the panel
     "media_file": "",              # our saved copy of it, inside the data folder
     "category": "math",
-    "page": "search",              # "search" or "draw"
+    "page": "search",              # "search", "draw" or "equation"
+    "equations": [],               # what you last typed on the Equation page, newest first
     "recent": [],
     "favorites": [],
     "usage": {},
     "seen_welcome": False,
 }
 MAX_RECENT = 40
+MAX_EQUATIONS = 12
 MAX_DRAWINGS_PER_SYMBOL = 12
 
 # Version 1 offered a fixed list of shortcuts, stored by these names.
@@ -97,6 +99,10 @@ class Store:
         usage = self.settings["usage"]
         usage[ch] = usage.get(ch, 0) + 1
         self.save()
+
+    def record_equation(self, source):
+        kept = [s for s in self["equations"] if s != source]
+        self["equations"] = [source] + kept[: MAX_EQUATIONS - 1]
 
     def is_favorite(self, ch):
         return ch in self.settings["favorites"]

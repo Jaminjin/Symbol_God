@@ -5,10 +5,11 @@ from __future__ import annotations
 from PySide6.QtCore import QEvent, QLineF, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (QActionGroup, QBrush, QColor, QConicalGradient, QGuiApplication, QIcon, QKeySequence,
                            QPainter, QPen, QPixmap, QRegion, QShortcut)
-from PySide6.QtWidgets import (QButtonGroup, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton,
-                               QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton,
+                               QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget, QWidgetAction)
 
-from . import macos, theme
+from . import macos, mathexpr, mathview, theme
+from .mathview import MathView
 from .symbols import code_of, display_text
 from .theme import RADIUS
 from .widgets import TAB_RADIUS, Bubble, DrawPad, InfoBar, MediaView, SymbolGrid
@@ -21,6 +22,7 @@ SNAP = 36            # cursor this close to a screen edge docks the palette ther
 MARGIN = 8
 PAD_SIDE, PAD_TOP = 12, 8        # empty space between the palette's border and what's in it
 EDGE, CORNER = 6, 24             # how near the border (and its corners) a drag resizes the palette
+PAGES = ("search", "draw", "equation")
 SHOW_IN = [("menu", "Menu bar"), ("dock", "Dock"), ("both", "Menu bar and Dock")]
 
 
@@ -76,6 +78,7 @@ class Panel(QWidget):
         self.pages = QStackedWidget()
         self.pages.addWidget(self._build_search_page())
         self.pages.addWidget(self._build_draw_page())
+        self.pages.addWidget(self._build_equation_page())
         root.addWidget(self.pages, 1)
         self.media = MediaView()
         self.media.hide()
@@ -172,8 +175,9 @@ class Panel(QWidget):
         row.setSpacing(3)
         self.search_tab = QPushButton("⌕  Search")
         self.draw_tab = QPushButton("✎  Draw")
+        self.equation_tab = QPushButton("x²  Equation")
         group = QButtonGroup(self)
-        for b, page in ((self.search_tab, "search"), (self.draw_tab, "draw")):
+        for b, page in ((self.search_tab, "search"), (self.draw_tab, "draw"), (self.equation_tab, "equation")):
             b.setObjectName("segment")
             b.setCheckable(True)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -182,6 +186,7 @@ class Panel(QWidget):
             row.addWidget(b)
         self.search_tab.setToolTip("Search by name, LaTeX (\\alpha) or code (U+03B1)   ⌘F")
         self.draw_tab.setToolTip("Draw the symbol and pick it from the matches   ⌘D")
+        self.equation_tab.setToolTip("Build powers, subscripts, fractions, roots and more   ⌘E")
         return seg
 
     def _build_search_page(self):
@@ -243,6 +248,65 @@ class Panel(QWidget):
         col.addWidget(self.matches, 4)
         return page
 
+    def _build_equation_page(self):
+        page = QWidget()
+        col = QVBoxLayout(page)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(8)
+        self.eq_input = QLineEdit()
+        self.eq_input.setObjectName("search")
+        self.eq_input.setPlaceholderText("Type it:  6^2   Cl_2   (a+b)/c   sqrt(x)")
+        self.eq_input.setClearButtonEnabled(True)
+        self.eq_input.installEventFilter(self)
+        self.eq_input.textChanged.connect(lambda _t: self.refresh_equation())
+        self.eq_view = MathView()
+        self.eq_view.hint = "^ raises, _ lowers, / makes a fraction.\nOr start from one of the buttons below."
+        tiles = QGridLayout()
+        tiles.setSpacing(4)
+        self.eq_tiles = []
+        for i, (name, picture, _items) in enumerate(mathexpr.GALLERY):
+            tile = self._tile(name)
+            tile.clicked.connect(lambda _=False, b=tile, n=i: self._open_gallery(b, n))
+            tiles.addWidget(tile, i // 6, i % 6)
+            self.eq_tiles.append((tile, picture))
+        self.eq_recent_btn = self._tile("Equations you've used")
+        self.eq_recent_btn.setText("◷")
+        self.eq_recent_btn.clicked.connect(self._recent_equations)
+        tiles.addWidget(self.eq_recent_btn, 1, 5)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.eq_text_btn = QPushButton()
+        self.eq_math_btn = QPushButton("Equation")
+        self.eq_copy_btn = QPushButton("Copy")
+        for b in (self.eq_text_btn, self.eq_math_btn, self.eq_copy_btn):
+            b.setObjectName("small")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.eq_text_btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.eq_math_btn.setToolTip("Paste it into Word as a real equation")
+        self.eq_copy_btn.setToolTip("Copy it: pastes as an equation in Word, as plain characters elsewhere")
+        self.eq_text_btn.clicked.connect(lambda: self.insert_equation(as_text=True))
+        self.eq_math_btn.clicked.connect(lambda: self.insert_equation(as_text=False))
+        self.eq_copy_btn.clicked.connect(lambda: self.ctl.copy_maths(self.eq_input.text()))
+        row.addWidget(self.eq_text_btn, 1)
+        row.addWidget(self.eq_math_btn)
+        row.addWidget(self.eq_copy_btn)
+        col.addWidget(self.eq_input)
+        col.addWidget(self.eq_view, 1)
+        col.addLayout(tiles)
+        col.addLayout(row)
+        return page
+
+    def _tile(self, tip, width=40, height=22):
+        tile = QToolButton()
+        tile.setObjectName("tile")
+        tile.setToolTip(tip)
+        tile.setCursor(Qt.CursorShape.PointingHandCursor)
+        tile.setIconSize(QSize(width, height))
+        tile.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        tile.setFixedHeight(height + 10)
+        tile.setMinimumWidth(width + 2)
+        return tile
+
     def _category_menu(self):
         menu = QMenu(self)
         entries = [("favorites", "★  Favorites"), ("recent", "◷  Recently used"), None]
@@ -262,6 +326,10 @@ class Panel(QWidget):
             grid.set_theme(theme)
         self.pad.theme = theme
         self.pad.update()
+        self.eq_view.theme = theme
+        self.eq_view.update()
+        for tile, picture in self.eq_tiles:
+            tile.setIcon(mathview.icon(picture, theme.text, 40, 22, 14))
 
     def update_dock_button(self, dock):
         if dock == "float":
@@ -277,6 +345,7 @@ class Panel(QWidget):
         self.refresh_results()
         self.refresh_recent()
         self.refresh_matches()
+        self.refresh_equation()
 
     def _category_title(self, key):
         if key == "favorites":
@@ -346,6 +415,100 @@ class Panel(QWidget):
         if self.hovering is None:
             self.info.show_char(chars[0] if chars else None)
 
+    # ------------------------------------------------------------------ equations
+    def refresh_equation(self):
+        """Redraw the preview and say what each button will put into Word."""
+        tree = mathexpr.parse(self.eq_input.text())
+        text, exact = mathexpr.to_text(tree)
+        empty = mathexpr.is_empty(tree)
+        self.eq_view.set_node(tree)
+        for b in (self.eq_text_btn, self.eq_math_btn, self.eq_copy_btn):
+            b.setEnabled(not empty)
+        shown = text if len(text) <= 16 else text[:15] + "…"
+        self.eq_text_btn.setText("As text" if empty else f"As text  {shown}")
+        self.eq_text_btn.setToolTip("" if empty else f"Type it with ordinary characters, in any app:  {text}"
+                                    + ("" if exact else "\n(plain characters can't stack this one; an equation can)"))
+        # Enter does whichever shows it properly: plain characters when they can, otherwise an equation.
+        for b, main in ((self.eq_text_btn, exact), (self.eq_math_btn, not exact and not empty)):
+            name = "link" if main else "small"
+            if b.objectName() != name:
+                b.setObjectName(name)
+                b.style().unpolish(b)
+                b.style().polish(b)
+
+    def insert_equation(self, as_text=None, other=False):
+        source = self.eq_input.text().strip()
+        tree = mathexpr.parse(source)
+        if mathexpr.is_empty(tree):
+            return
+        if as_text is None:
+            as_text = mathexpr.to_text(tree)[1] != other
+        self.ctl.insert_maths(source, as_text)
+        self.eq_input.selectAll()
+
+    def _next_hole(self, backward=False):
+        """Tab jumps to the next empty slot (□), ready to be typed over."""
+        line, text = self.eq_input, self.eq_input.text()
+        if backward:
+            at = text.rfind(mathexpr.HOLE, 0, max(0, line.selectionStart() if line.hasSelectedText() else line.cursorPosition()))
+            at = text.rfind(mathexpr.HOLE) if at < 0 else at
+        else:
+            at = text.find(mathexpr.HOLE, line.selectionEnd() if line.hasSelectedText() else line.cursorPosition())
+            at = text.find(mathexpr.HOLE) if at < 0 else at
+        if at >= 0:
+            line.setSelection(at, 1)
+
+    def use_template(self, template):
+        """Put a structure into the line.  Whatever was selected goes into its first slot."""
+        line = self.eq_input
+        chosen = line.selectedText()
+        hole_at = template.find(mathexpr.HOLE)
+        if chosen and chosen != mathexpr.HOLE and hole_at >= 0:
+            if len(chosen) > 1 and template[hole_at - 1:hole_at] != "(" and not (chosen[0] in "([{|" and chosen[-1] in ")]}|"):
+                chosen = f"({chosen})"
+            template = template.replace(mathexpr.HOLE, chosen, 1)
+            hole_at = template.find(mathexpr.HOLE)
+        start = line.selectionStart() if line.hasSelectedText() else line.cursorPosition()
+        line.insert(template)
+        line.setFocus()
+        if hole_at >= 0:
+            line.setSelection(start + hole_at, 1)
+
+    def _open_gallery(self, button, n):
+        """The choices under one of the structure buttons, drawn the way they'll look."""
+        name, _picture, items = mathexpr.GALLERY[n]
+        menu = QMenu(self)
+        holder = QWidget()
+        grid = QGridLayout(holder)
+        grid.setContentsMargins(4, 4, 4, 4)
+        grid.setSpacing(4)
+        color = self.ctl.theme.text
+        row = column = 0
+        for template in items:
+            if template is None or column == 3:
+                row, column = row + 1, 0
+            if template is None:
+                continue
+            tile = self._tile(f"{name}:  {template}", 84, 40)
+            tile.setIcon(mathview.icon(template, color, 84, 40, 17))
+            tile.clicked.connect(lambda _=False, t=template: (menu.close(), self.use_template(t)))
+            grid.addWidget(tile, row, column)
+            column += 1
+        action = QWidgetAction(menu)
+        action.setDefaultWidget(holder)
+        menu.addAction(action)
+        menu.exec(button.mapToGlobal(QPoint(0, button.height() + 2)))
+
+    def _recent_equations(self):
+        menu = QMenu(self)
+        used = self.store["equations"] or []
+        for source in used:
+            action = menu.addAction(source if len(source) <= 34 else source[:33] + "…")
+            action.triggered.connect(lambda _=False, t=source: (self.eq_input.setText(t), self.eq_input.setFocus()))
+        if not used:
+            menu.addAction("Equations you insert are kept here").setEnabled(False)
+        menu.exec(self.eq_recent_btn.mapToGlobal(QPoint(0, self.eq_recent_btn.height() + 2)))
+
     def _pick_match(self, ch):
         strokes = [list(s) for s in self.pad.strokes]
         self.ctl.insert(ch, strokes=strokes, pad_size=self.pad.pad_size())
@@ -388,13 +551,19 @@ class Panel(QWidget):
 
     # ------------------------------------------------------------------ pages & keys
     def show_page(self, page, focus=True):
-        page = "draw" if page == "draw" else "search"
+        page = page if page in PAGES else "search"
         self.store.settings["page"] = page
-        self.pages.setCurrentIndex(1 if page == "draw" else 0)
+        self.pages.setCurrentIndex(PAGES.index(page))
         self.refresh_media()
         self.search_tab.setChecked(page == "search")
         self.draw_tab.setChecked(page == "draw")
-        if page == "draw":
+        self.equation_tab.setChecked(page == "equation")
+        self.info.setVisible(page != "equation")        # that bar describes one symbol, not an equation
+        if page == "equation":
+            if focus:
+                self.eq_input.setFocus()
+                self.eq_input.selectAll()
+        elif page == "draw":
             self.refresh_matches()
             if focus:
                 self.pad.setFocus()
@@ -414,10 +583,20 @@ class Panel(QWidget):
             self.search.clear()
         elif self.pages.currentIndex() == 1 and self.pad.strokes:
             self.pad.clear()
+        elif self.pages.currentIndex() == 2 and self.eq_input.text():
+            self.eq_input.clear()
         else:
             self.ctl.return_focus()
 
     def eventFilter(self, obj, e):
+        if obj is getattr(self, "eq_input", None) and e.type() == QEvent.Type.KeyPress:
+            key = e.key()
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):         # ⌘Enter = the other way of inserting
+                self.insert_equation(other=bool(e.modifiers() & Qt.KeyboardModifier.ControlModifier))
+                return True
+            if key in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
+                self._next_hole(backward=key == Qt.Key.Key_Backtab)
+                return True
         if obj is self.search and e.type() == QEvent.Type.KeyPress:
             key = e.key()
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
@@ -775,6 +954,7 @@ class PaletteWindow(QWidget):
 
         add("Ctrl+F", self.panel.focus_search)          # Ctrl means ⌘ on macOS
         add("Ctrl+D", lambda: self.panel.show_page("draw"))
+        add("Ctrl+E", lambda: self.panel.show_page("equation"))
         add("Ctrl+Z", self.panel.undo_stroke)
         add("Ctrl+W", self.ctl.hide_palette)
         add("Ctrl+Q", self.ctl.quit)
@@ -911,7 +1091,8 @@ class PaletteWindow(QWidget):
         return True
 
     # ------------------------------------------------------------------ showing
-    def summon(self, page="search"):
+    def summon(self, page=None):
+        """Bring the palette forward, on the page you name or the one you were last using."""
         if not self.isVisible():
             self.show()
             self.ctl.after_show()
@@ -919,7 +1100,7 @@ class PaletteWindow(QWidget):
             self.store["expanded"] = True
             self.apply_layout()
         self.ctl.focus_palette()
-        self.panel.show_page(page)
+        self.panel.show_page(page or self.store["page"])
 
     def paintEvent(self, _e):
         if not self.expanded:

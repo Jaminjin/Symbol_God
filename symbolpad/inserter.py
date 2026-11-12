@@ -44,6 +44,39 @@ class Inserter(QObject):
         self._when_in_front(target, lambda: self._deliver(text, method, saved, name),
                             lambda: self._give_up(text, name))
 
+    def copy_equation(self, mathml, text):
+        """On the clipboard as an equation for Word, and as ordinary characters for everything else."""
+        if not macos.set_clipboard({macos.MATHML: mathml, macos.PLAIN_TEXT: text}):
+            self.copy(text)
+
+    def insert_equation(self, mathml, text):
+        """Paste built-up maths into the app you were typing in.  Word makes a real equation of it."""
+        target = self.tracker.target() if self.tracker else None
+        if self.store["insert_method"] == "copy" or target is None:
+            self.copy_equation(mathml, text)
+            self.finished.emit("Copied the equation · paste it with ⌘V")
+            return
+        name = target.localizedName() or "the app"
+        if not macos.can_type():
+            self.copy_equation(mathml, text)
+            macos.activate(target)
+            self.finished.emit(f"Copied the equation · press ⌘V in {name}")
+            self.needs_permission.emit()
+            return
+        saved = macos.clipboard_snapshot()
+        self.copy_equation(mathml, text)
+        macos.activate(target)
+
+        def paste():
+            macos.press_paste()
+            QTimer.singleShot(1200, lambda: macos.restore_clipboard(saved))
+            self.finished.emit(f"Inserted the equation into {name}")
+
+        def give_up():
+            self.finished.emit(f"Copied the equation · click into {name} and press ⌘V")
+
+        self._when_in_front(target, paste, give_up)
+
     def _when_in_front(self, target, then, give_up):
         pid = target.processIdentifier()
         start = time.monotonic()

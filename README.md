@@ -3,6 +3,9 @@
 A small always-on-top palette for typing **any symbol** into Word (or any other Mac app).
 Find a symbol by **searching** for it, like Word's *Insert Symbol*, or by **drawing** it,
 like Google Docs' *Draw a symbol here*. Click it and it's typed where your cursor is.
+A third tab, **Equation**, builds powers, subscripts, fractions, roots, integrals, matrices
+and the rest of Word's equation structures from what you type: `6^2` becomes 6², `Cl_2`
+becomes Cl₂.
 
 The palette can float anywhere as a box, dock to the side of the screen as a panel,
 or shrink to a little **τ** bubble. It's made of Apple's Liquid Glass, so whatever is
@@ -60,11 +63,55 @@ Until you allow it, clicking a symbol copies it, and you press **⌘V** in Word.
 | Insert | Click it, or press **Enter** for the highlighted one |
 | Copy without inserting | **⌘Enter**, the *Copy* button, or right-click → Copy |
 | Draw a symbol | Click **✎ Draw** (⌘D), draw it, then click the right match |
+| Type a power, subscript or fraction | Click **x² Equation** (⌘E), type `6^2`, `Cl_2` or `(a+b)/c`, press **Enter** |
 | Browse | The category button (∑ Math ▾): Greek, Arrows, Superscripts, Science… |
 | Insert a recent symbol | Click it in the *Recent* row, or **⌘1…⌘9** |
 | Save favourites | Right-click → *Add to Favorites*, or the ☆ button |
 | Play a looping GIF in the panel | ⚙ → *Show GIF* (⚙ → *Choose GIF…* to change it, or right-click the GIF) |
-| Go back to Word | **Esc** (clears the search first, if there is one) |
+| Go back to Word | **Esc** (clears what you typed first, if there is anything) |
+
+## Equations
+
+The **x² Equation** tab (⌘E) is for things that are more than one symbol. Type on the
+line at the top and the preview shows it built up, the way it will look in Word.
+
+| Type | Get |
+|---|---|
+| `6^2`, `x^(n+1)`, `e^-x` | a power (brackets only group, they don't show) |
+| `Cl_2`, `H_2SO_4`, `x_1^2` | a subscript, or both at once |
+| `(a+b)/c`, `1/2`, `dy/dx` | a fraction |
+| `sqrt(x)`, `cbrt(x)`, `root(n)(x)` | a root |
+| `int_a^b f(x) dx`, `sum_(i=0)^n i^2` | an integral or a sum with its limits |
+| `lim_(n->inf) 1/n`, `log_2 8`, `sin^2 θ` | limits, logs and functions |
+| `(x)`, `[x]`, `\{x\}`, `abs(x)`, `cases(a, b; c, d)` | brackets that grow to fit (bars too: type them around x) |
+| `bar(x)`, `hat(x)`, `vec(v)`, `dot(x)`, `overline(AB)` | accents |
+| `pmatrix(1, 0; 0, 1)`, `bmatrix(…)`, `matrix(…)` | a matrix: commas between columns, semicolons between rows |
+| `over(→, "heat")`, `:=` | operators with something written above |
+
+You don't have to remember these. The twelve buttons under the preview are Word's
+*Fraction, Script, Radical, Integral, Large Operator, Bracket, Function, Accent, Limit
+and Log, Operator, Matrix*, plus **◷** for equations you've used before. Click one and
+pick a shape; it lands on the line with empty slots (□). Type to fill the first slot and
+press **Tab** for the next. Select something first and it goes into the first slot.
+
+Greek letters and common signs can be typed by name: `theta`, `pi`, `Delta`, `inf`,
+`->`, `<=`, `!=`, `+-`. LaTeX names work too (`\alpha`, `\frac{a}{b}`). Put ordinary
+words in quotes: `"speed" = "distance"/"time"`.
+
+There are two ways to put it into your document:
+
+- **As text** types it with ordinary characters: 6², Cl₂, H₂SO₄, ½. It keeps the font
+  of the sentence you're in and works in every app. Unicode only has small versions of
+  the digits, `+ − = ( )` and most letters, so it can't stack a fraction like (a+b)/c.
+- **Equation** pastes it into Word as a real, editable equation, exactly like one made
+  with Word's own equation tools. Other apps get the plain characters instead.
+
+**Enter** does whichever shows it properly (the blue button): plain characters when they
+are exact, an equation otherwise. **⌘Enter** does the other one. **Copy** puts both
+forms on the clipboard, so ⌘V makes an equation in Word and text elsewhere.
+
+In an equation, letters are italic variables, as in maths. For chemistry (Cl₂, CO₂)
+use **As text**, which is what Enter does for those anyway.
 
 **Moving it around.** Drag the top bar to move it. Drag it to the left or right edge
 of the screen and it docks there as a full-height side panel; drag it away to float
@@ -159,6 +206,8 @@ symbolpad/
   app.py                 wires everything together, menu-bar and Dock icon
   window.py              the palette: panel, bubble, docking, resizing, settings menu
   widgets.py             symbol grid, drawing pad, info bar, toast, bubble
+  mathexpr.py            reads typed maths (6^2, (a+b)/c); writes Word equations and plain text
+  mathview.py            draws built-up maths for the Equation preview and gallery
   shortcuts.py           the window where you record your shortcuts
   theme.py               the looks: glass or solid, light or dark, your own colour
   icon.py                draws the τ app icon
